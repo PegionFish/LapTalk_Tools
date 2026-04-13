@@ -37,6 +37,42 @@ pip install -r requirements.txt
 python .\main.pyw
 ```
 
+## 打包 EXE
+
+1. 确保已安装 `csv_visual/requirements.txt` 中的依赖，其中已包含打包所需的 `PyInstaller`。
+
+2. 执行打包脚本，默认生成可直接拷贝到其他 Windows 电脑使用的单文件 EXE：
+
+```powershell
+python .\build_exe.py
+```
+
+或使用 PowerShell 包装脚本：
+
+```powershell
+.\build_exe.ps1
+```
+
+3. 生成的 EXE 默认位于：
+
+```text
+csv_visual\dist\HWiNFO-CSV-Plotter.exe
+```
+
+4. 如果希望生成目录模式而不是单文件 EXE，可执行：
+
+```powershell
+python .\build_exe.py --onedir
+```
+
+5. 如果只想查看将要执行的 PyInstaller 命令，可执行：
+
+```powershell
+python .\build_exe.py --dry-run
+```
+
+6. `requirements.txt` 同时覆盖 GUI 运行和 EXE 打包所需依赖；默认生成的单文件 `EXE` 适合直接复制到其他 Windows 电脑使用。
+
 ## 使用方式
 
 1. 点击“浏览...”选择 HWiNFO CSV 文件
@@ -51,6 +87,7 @@ python .\main.pyw
 - 预览会在后台线程中按当前宽度、高度、DPI 与样式设置生成内存 PNG，窗口变化不会改写渲染参数
 - 预览区会像 Windows 图片查看器一样按窗口大小自动等比 fit，不提供滚动查看原始细节
 - 导出 PNG 与预览共用同一套宽高、DPI 和样式配置；预览只改变查看方式，不改变原图内容
+- 默认打包产物是单文件 `EXE`，目标电脑无需额外安装 Python；将生成的 `EXE` 文件复制到其他 Windows 电脑即可运行
 - X/Y 轴标题输入已移除，时间轴右下角的额外日期偏移标注也已去掉
 - 时间轴显示的是抽象时长，而不是 HWiNFO CSV 中的原始日期时间
 - 时间轴在小时部分为 `00` 时会自动压缩为 `MM:SS`，超过 1 小时后恢复为 `HH:MM:SS`
@@ -61,4 +98,4 @@ python .\main.pyw
 - 时间轴会在保证可读性的前提下尽量细化，避免短时间范围内网格和刻度过密
 - 如果 CSV 中存在重名列，界面会显示 CSV 列号和重复序号来区分
 - 如果 CSV 使用 UTF-8、UTF-16、GB18030/GBK 等常见编码，工具会自动选择更合理的解码方式，减少中文乱码
-- 当前仓库已适配样例文件 `R23-15.CSV`
+- 如需手工验证，推荐使用你自己的 HWiNFO CSV 导出文件，而不是将真实测试数据写死到自动化测试中

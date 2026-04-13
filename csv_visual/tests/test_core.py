@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,21 +24,64 @@ from hwinfo_plotter.core import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SAMPLE_CSV = ROOT / "R23-15.CSV"
+
+
+def build_synthetic_csv_headers() -> list[str]:
+    return [
+        "Date",
+        "Time",
+        "CPU Package Power [W]",
+        "GPU Core Load [%]",
+        "Available Physical Memory [MB]",
+        "Notes",
+    ]
+
+
+def build_synthetic_csv_rows(row_count: int = 24) -> list[list[str]]:
+    base_time = datetime(2026, 4, 13, 12, 0, 0)
+    rows: list[list[str]] = []
+    for index in range(row_count):
+        timestamp = base_time + timedelta(seconds=index * 30)
+        rows.append(
+            [
+                timestamp.strftime("%d/%m/%Y"),
+                timestamp.strftime("%H:%M:%S"),
+                f"{55.0 + index * 0.5:.1f}",
+                f"{30.0 + (index % 7) * 3.0:.1f}",
+                f"{8192.0 - index * 12.5:.1f}",
+                "stable" if index % 2 == 0 else "warming",
+            ]
+        )
+    return rows
+
+
+def write_synthetic_hwinfo_csv(destination: Path) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("w", encoding="utf-8-sig", newline="") as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow(build_synthetic_csv_headers())
+        writer.writerows(build_synthetic_csv_rows())
+    return destination
 
 
 class CoreSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.data = load_hwinfo_csv(SAMPLE_CSV)
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        cls.fixture_path = write_synthetic_hwinfo_csv(Path(cls.temp_dir.name) / "synthetic_hwinfo.csv")
+        cls.data = load_hwinfo_csv(cls.fixture_path)
 
-    def test_loads_sample_csv(self) -> None:
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.temp_dir.cleanup()
+
+    def test_loads_synthetic_csv_fixture(self) -> None:
         self.assertGreater(len(self.data.timestamps), 0)
-        self.assertGreater(len(self.data.columns), 100)
-        self.assertEqual(self.data.source_path.name, "R23-15.CSV")
+        self.assertEqual(len(self.data.columns), 4)
+        self.assertEqual(self.data.source_path.name, "synthetic_hwinfo.csv")
 
-    def test_loads_sample_csv_with_preloaded_series(self) -> None:
-        data = load_hwinfo_csv(SAMPLE_CSV, preload_numeric=True)
+    def test_loads_synthetic_csv_with_preloaded_series(self) -> None:
+        data = load_hwinfo_csv(self.fixture_path, preload_numeric=True)
 
         self.assertEqual(len(data._series_cache), len(data.columns))
         self.assertTrue(data._all_series_preloaded)
