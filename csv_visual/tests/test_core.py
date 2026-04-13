@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from matplotlib import dates as mdates
+
 from hwinfo_plotter.core import (
     ChartStyle,
     HWiNFOData,
@@ -79,8 +81,6 @@ class CoreSmokeTests(unittest.TestCase):
             dpi=120,
             style=ChartStyle(
                 title="自定义标题",
-                x_label="采样时间",
-                y_label="读数",
                 line_width=2.4,
                 show_grid=False,
                 show_legend=False,
@@ -89,8 +89,9 @@ class CoreSmokeTests(unittest.TestCase):
         axis = figure.axes[0]
 
         self.assertEqual(axis.get_title(), "自定义标题")
-        self.assertEqual(axis.get_xlabel(), "采样时间")
-        self.assertEqual(axis.get_ylabel(), "读数")
+        self.assertEqual(axis.get_xlabel(), "")
+        self.assertEqual(axis.get_ylabel(), "")
+        self.assertFalse(axis.xaxis.get_offset_text().get_visible())
         self.assertEqual(axis.lines[0].get_linewidth(), 2.4)
         self.assertIsNone(axis.get_legend())
 
@@ -172,6 +173,40 @@ class CoreSmokeTests(unittest.TestCase):
 
         self.assertEqual(axis.lines[0].get_color(), "#ff0000")
         self.assertEqual(axis.lines[1].get_color(), "#00ff00")
+
+    def test_time_axis_uses_denser_ticks(self) -> None:
+        base_time = datetime(2026, 4, 13, 12, 0, 0)
+        timestamps = [base_time + timedelta(minutes=index) for index in range(31)]
+        data = HWiNFOData(
+            source_path=Path("synthetic.csv"),
+            encoding="utf-8",
+            headers=["Date", "Time", "CPU"],
+            columns=[SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU")],
+            timestamps=timestamps,
+            rows=[
+                ["13/04/2026", f"12:{index:02d}:00", f"{float(index):.1f}"]
+                for index in range(31)
+            ],
+        )
+
+        figure = build_figure(
+            data,
+            [2],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+        )
+        axis = figure.axes[0]
+        locator = axis.xaxis.get_major_locator()
+        tick_values = locator.tick_values(timestamps[0], timestamps[-1])
+        tick_datetimes = mdates.num2date(tick_values)
+        minute_diffs = [
+            (tick_datetimes[index + 1] - tick_datetimes[index]).total_seconds() / 60
+            for index in range(len(tick_datetimes) - 1)
+        ]
+
+        self.assertTrue(minute_diffs)
+        self.assertLessEqual(min(minute_diffs), 2)
 
 
 if __name__ == "__main__":

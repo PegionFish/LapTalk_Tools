@@ -72,8 +72,6 @@ class HWiNFOPlotterApp(tk.Tk):
         self.file_var = tk.StringVar(value=self._find_default_csv())
         self.filter_var = tk.StringVar()
         self.title_var = tk.StringVar()
-        self.x_label_var = tk.StringVar(value="时间戳")
-        self.y_label_var = tk.StringVar(value="数值")
         self.width_var = tk.StringVar(value="1920")
         self.height_var = tk.StringVar(value="1080")
         self.dpi_var = tk.StringVar(value="160")
@@ -87,8 +85,6 @@ class HWiNFOPlotterApp(tk.Tk):
         self.filter_var.trace_add("write", self._on_filter_changed)
         for option_var in (
             self.title_var,
-            self.x_label_var,
-            self.y_label_var,
             self.width_var,
             self.height_var,
             self.dpi_var,
@@ -170,40 +166,34 @@ class HWiNFOPlotterApp(tk.Tk):
         ttk.Label(options_frame, text="图表标题").grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 8))
         ttk.Entry(options_frame, textvariable=self.title_var).grid(row=0, column=1, columnspan=3, sticky="ew", pady=(0, 8))
 
-        ttk.Label(options_frame, text="X 轴标题").grid(row=1, column=0, sticky="w", pady=(0, 8), padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.x_label_var).grid(row=1, column=1, sticky="ew", pady=(0, 8))
+        ttk.Label(options_frame, text="宽度(px)").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.width_var, width=10).grid(row=1, column=1, sticky="ew")
 
-        ttk.Label(options_frame, text="Y 轴标题").grid(row=1, column=2, sticky="w", pady=(0, 8), padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.y_label_var).grid(row=1, column=3, sticky="ew", pady=(0, 8))
+        ttk.Label(options_frame, text="高度(px)").grid(row=1, column=2, sticky="w", padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.height_var, width=10).grid(row=1, column=3, sticky="ew")
 
-        ttk.Label(options_frame, text="宽度(px)").grid(row=2, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.width_var, width=10).grid(row=2, column=1, sticky="ew")
+        ttk.Label(options_frame, text="DPI").grid(row=2, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.dpi_var, width=10).grid(row=2, column=1, sticky="ew", pady=(8, 0))
 
-        ttk.Label(options_frame, text="高度(px)").grid(row=2, column=2, sticky="w", padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.height_var, width=10).grid(row=2, column=3, sticky="ew")
-
-        ttk.Label(options_frame, text="DPI").grid(row=3, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.dpi_var, width=10).grid(row=3, column=1, sticky="ew", pady=(8, 0))
-
-        ttk.Label(options_frame, text="曲线线宽").grid(row=3, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.line_width_var, width=10).grid(row=3, column=3, sticky="ew", pady=(8, 0))
+        ttk.Label(options_frame, text="曲线线宽").grid(row=2, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.line_width_var, width=10).grid(row=2, column=3, sticky="ew", pady=(8, 0))
 
         ttk.Checkbutton(options_frame, text="显示网格", variable=self.show_grid_var).grid(
-            row=4,
+            row=3,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
         ttk.Checkbutton(options_frame, text="显示图例", variable=self.show_legend_var).grid(
-            row=4,
+            row=3,
             column=2,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
 
-        ttk.Label(options_frame, text="图例位置").grid(row=5, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Label(options_frame, text="图例位置").grid(row=4, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         legend_location_box = ttk.Combobox(
             options_frame,
             textvariable=self.legend_location_var,
@@ -211,7 +201,7 @@ class HWiNFOPlotterApp(tk.Tk):
             state="readonly",
             width=10,
         )
-        legend_location_box.grid(row=5, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        legend_location_box.grid(row=4, column=1, columnspan=3, sticky="ew", pady=(8, 0))
 
         series_style_frame = ttk.Labelframe(control_panel, text="参数颜色", padding=12)
         series_style_frame.grid(row=6, column=0, sticky="nsew", pady=(12, 0))
@@ -516,8 +506,6 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def reset_chart_options(self) -> None:
         self.title_var.set("")
-        self.x_label_var.set("时间戳")
-        self.y_label_var.set("数值")
         self.width_var.set("1920")
         self.height_var.set("1080")
         self.dpi_var.set("160")
@@ -637,8 +625,6 @@ class HWiNFOPlotterApp(tk.Tk):
         line_width = self.parse_positive_float(self.line_width_var.get(), "曲线线宽")
         style = ChartStyle(
             title=self.title_var.get().strip() or None,
-            x_label=self.x_label_var.get().strip() or "时间戳",
-            y_label=self.y_label_var.get().strip() or "数值",
             line_width=line_width,
             show_grid=self.show_grid_var.get(),
             show_legend=self.show_legend_var.get(),

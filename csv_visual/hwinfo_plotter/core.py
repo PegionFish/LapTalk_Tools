@@ -68,8 +68,6 @@ class SensorColumn:
 @dataclass(frozen=True)
 class ChartStyle:
     title: str | None = None
-    x_label: str = "时间戳"
-    y_label: str = "数值"
     line_width: float = 1.8
     show_grid: bool = True
     grid_alpha: float = 0.28
@@ -244,9 +242,7 @@ def build_figure(
     figure.patch.set_alpha(0.0)
     axis.set_facecolor("none")
 
-    locator = mdates.AutoDateLocator()
-    axis.xaxis.set_major_locator(locator)
-    axis.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    configure_time_axis(axis, data.timestamps)
 
     plotted_line_count = 0
     for column_index in column_indices:
@@ -272,8 +268,6 @@ def build_figure(
     if plotted_line_count == 0:
         raise ValueError("所选参数没有可用于绘图的数值数据。")
 
-    axis.set_xlabel(chart_style.x_label.strip() or "时间戳")
-    axis.set_ylabel(chart_style.y_label.strip() or "数值")
     if chart_style.show_grid:
         axis.grid(True, linestyle="--", linewidth=0.8, alpha=chart_style.grid_alpha)
     else:
@@ -483,6 +477,37 @@ def resolve_chart_style(style: ChartStyle | None, title: str | None = None) -> C
     if title is not None and not style.title:
         return replace(style, title=title)
     return style
+
+
+def configure_time_axis(axis, timestamps: Sequence[datetime]) -> None:
+    locator = build_time_locator(timestamps)
+    formatter = build_time_formatter(timestamps)
+    axis.xaxis.set_major_locator(locator)
+    axis.xaxis.set_major_formatter(formatter)
+    axis.xaxis.get_offset_text().set_visible(False)
+
+
+def build_time_locator(timestamps: Sequence[datetime]):
+    locator = mdates.AutoDateLocator(minticks=12, maxticks=24, interval_multiples=True)
+    locator.intervald[mdates.MINUTELY] = [1, 2, 3, 5, 10, 15, 20, 30]
+    locator.intervald[mdates.HOURLY] = [1, 2, 3, 4, 6, 8, 12]
+    locator.intervald[mdates.SECONDLY] = [1, 2, 5, 10, 15, 20, 30]
+    return locator
+
+
+def build_time_formatter(timestamps: Sequence[datetime]):
+    if not timestamps:
+        return mdates.DateFormatter("%H:%M")
+
+    time_span = timestamps[-1] - timestamps[0]
+    total_seconds = max(time_span.total_seconds(), 0)
+    if total_seconds <= 30 * 60:
+        return mdates.DateFormatter("%H:%M:%S")
+    if total_seconds <= 12 * 60 * 60:
+        return mdates.DateFormatter("%H:%M")
+    if total_seconds <= 7 * 24 * 60 * 60:
+        return mdates.DateFormatter("%m-%d %H:%M")
+    return mdates.DateFormatter("%Y-%m-%d %H:%M")
 
 
 def configure_matplotlib_fonts() -> None:
