@@ -36,6 +36,10 @@ def build_synthetic_data() -> HWiNFOData:
 
 
 class GuiBehaviorTests(unittest.TestCase):
+    def test_normalize_hex_color_accepts_plain_hex_value(self) -> None:
+        self.assertEqual(HWiNFOPlotterApp.normalize_hex_color("66CCFF"), "#66ccff")
+        self.assertEqual(HWiNFOPlotterApp.normalize_hex_color("#123456"), "#123456")
+
     def test_fit_size_within_bounds_preserves_aspect_ratio(self) -> None:
         self.assertEqual(fit_size_within_bounds(1600, 900, 800, 800), (800, 450))
         self.assertEqual(fit_size_within_bounds(900, 1600, 800, 800), (450, 800))
@@ -121,6 +125,52 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertFalse(preview_request.style.show_time_axis)
             self.assertFalse(preview_request.style.show_value_axis)
             self.assertEqual(preview_request.visible_range_seconds, (1.0, 2.0))
+        finally:
+            app.on_close()
+
+    def test_apply_series_color_uses_hex_entry_value(self) -> None:
+        data = build_synthetic_data()
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.data = data
+            app.selected_column_indices = {2}
+            app.refresh_selected_series_list()
+            app.selected_series_listbox.selection_set(0)
+            app.series_color_var.set("66CCFF")
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.apply_series_color()
+
+            self.assertEqual(app.column_colors, {2: "#66ccff"})
+            self.assertEqual(app.series_color_var.get(), "66CCFF")
+            self.assertEqual(app.selected_series_listbox.get(0), "[002] CPU  ·  #66CCFF")
+            mock_refresh.assert_called_once_with(immediate=True)
+        finally:
+            app.on_close()
+
+    def test_apply_series_color_rejects_invalid_hex_value(self) -> None:
+        data = build_synthetic_data()
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.data = data
+            app.selected_column_indices = {2}
+            app.refresh_selected_series_list()
+            app.selected_series_listbox.selection_set(0)
+            app.series_color_var.set("GGHHII")
+
+            with patch("hwinfo_plotter.gui.messagebox.showerror") as mock_error, patch.object(
+                app,
+                "schedule_preview_refresh",
+            ) as mock_refresh:
+                app.apply_series_color()
+
+            self.assertEqual(app.column_colors, {})
+            mock_error.assert_called_once()
+            mock_refresh.assert_not_called()
         finally:
             app.on_close()
 

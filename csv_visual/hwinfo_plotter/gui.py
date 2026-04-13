@@ -153,6 +153,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.legend_location_var = tk.StringVar(value="自动")
         self.selection_var = tk.StringVar(value="当前未选择参数")
         self.status_var = tk.StringVar(value="请选择一个 HWiNFO CSV 文件。")
+        self.series_color_var = tk.StringVar()
 
         self.filter_var.trace_add("write", self._on_filter_changed)
         for option_var in (
@@ -427,19 +428,34 @@ class HWiNFOPlotterApp(tk.Tk):
         selected_series_scrollbar.grid(row=0, column=1, sticky="ns")
         self.selected_series_listbox.configure(yscrollcommand=selected_series_scrollbar.set)
 
-        color_button_row = ttk.Frame(series_style_frame)
-        color_button_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        color_button_row.columnconfigure((0, 1), weight=1)
+        color_input_row = ttk.Frame(series_style_frame)
+        color_input_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        color_input_row.columnconfigure(1, weight=1)
 
-        ttk.Button(color_button_row, text="设置颜色", command=self.choose_series_color).grid(
+        ttk.Label(color_input_row, text="HEX").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        series_color_entry = ttk.Entry(color_input_row, textvariable=self.series_color_var)
+        series_color_entry.grid(row=0, column=1, sticky="ew")
+        series_color_entry.bind("<Return>", self._on_series_color_submitted)
+
+        color_button_row = ttk.Frame(series_style_frame)
+        color_button_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        color_button_row.columnconfigure((0, 1, 2), weight=1)
+
+        ttk.Button(color_button_row, text="应用颜色", command=self.apply_series_color).grid(
             row=0,
             column=0,
             sticky="ew",
             padx=(0, 4),
         )
-        ttk.Button(color_button_row, text="清除颜色", command=self.clear_series_color).grid(
+        ttk.Button(color_button_row, text="取色器...", command=self.choose_series_color).grid(
             row=0,
             column=1,
+            sticky="ew",
+            padx=4,
+        )
+        ttk.Button(color_button_row, text="清除颜色", command=self.clear_series_color).grid(
+            row=0,
+            column=2,
             sticky="ew",
             padx=(4, 0),
         )
@@ -763,17 +779,42 @@ class HWiNFOPlotterApp(tk.Tk):
         if not self.data:
             return
 
-        selected_columns = [
-            column
-            for column in self.data.columns
-            if column.index in self.selected_column_indices
-        ]
+        selected_columns = self.get_selected_series_columns()
         for listbox_index, column in enumerate(selected_columns):
             color_text = self.column_colors.get(column.index)
-            display_text = column.display_name if not color_text else f"{column.display_name}  ·  {color_text}"
+            display_text = column.display_name if not color_text else f"{column.display_name}  ·  {color_text.upper()}"
             self.selected_series_listbox.insert(tk.END, display_text)
             if color_text:
                 self.selected_series_listbox.itemconfig(listbox_index, foreground=color_text)
+
+    def _on_series_color_submitted(self, _event=None) -> str:
+        self.apply_series_color()
+        return "break"
+
+    def apply_series_color(self) -> None:
+        if not self.data:
+            return
+
+        selected_positions = self.selected_series_listbox.curselection()
+        if not selected_positions:
+            messagebox.showinfo("未选择参数", "请先在“参数颜色”列表中选择一个或多个参数。")
+            return
+
+        try:
+            selected_color = self.normalize_hex_color(self.series_color_var.get())
+        except ValueError as exc:
+            messagebox.showerror("颜色格式无效", str(exc))
+            return
+
+        self.series_color_var.set(selected_color.removeprefix("#").upper())
+        selected_columns = self.get_selected_series_columns()
+        for position in selected_positions:
+            if position >= len(selected_columns):
+                continue
+            self.column_colors[selected_columns[position].index] = selected_color
+
+        self.refresh_selected_series_list()
+        self.schedule_preview_refresh(immediate=True)
 
     def choose_series_color(self) -> None:
         if not self.data:
@@ -784,22 +825,21 @@ class HWiNFOPlotterApp(tk.Tk):
             messagebox.showinfo("未选择参数", "请先在“参数颜色”列表中选择一个或多个参数。")
             return
 
-        _, selected_color = colorchooser.askcolor(title="选择参数颜色")
+        initial_color = None
+        try:
+            initial_color = self.normalize_hex_color(self.series_color_var.get())
+        except ValueError:
+            pass
+
+        _, selected_color = colorchooser.askcolor(
+            title="选择参数颜色",
+            initialcolor=initial_color,
+        )
         if not selected_color:
             return
 
-        selected_columns = [
-            column
-            for column in self.data.columns
-            if column.index in self.selected_column_indices
-        ]
-        for position in selected_positions:
-            if position >= len(selected_columns):
-                continue
-            self.column_colors[selected_columns[position].index] = selected_color
-
-        self.refresh_selected_series_list()
-        self.schedule_preview_refresh(immediate=True)
+        self.series_color_var.set(selected_color.removeprefix("#").upper())
+        self.apply_series_color()
 
     def clear_series_color(self) -> None:
         if not self.data:
@@ -810,11 +850,7 @@ class HWiNFOPlotterApp(tk.Tk):
             messagebox.showinfo("未选择参数", "请先在“参数颜色”列表中选择一个或多个参数。")
             return
 
-        selected_columns = [
-            column
-            for column in self.data.columns
-            if column.index in self.selected_column_indices
-        ]
+        selected_columns = self.get_selected_series_columns()
         changed = False
         for position in selected_positions:
             if position >= len(selected_columns):
@@ -1185,6 +1221,12 @@ class HWiNFOPlotterApp(tk.Tk):
         selected_set = set(self.selected_column_indices)
         return [column.index for column in self.data.columns if column.index in selected_set]
 
+    def get_selected_series_columns(self):
+        if not self.data:
+            return []
+
+        return [column for column in self.data.columns if column.index in self.selected_column_indices]
+
     def show_preview_image(self, png_bytes: bytes) -> None:
         self.clear_preview()
 
@@ -1298,6 +1340,17 @@ class HWiNFOPlotterApp(tk.Tk):
             raise ValueError(f"{field_name} 必须大于 0。")
 
         return parsed
+
+    @staticmethod
+    def normalize_hex_color(value: str) -> str:
+        color_text = value.strip()
+        if color_text.startswith("#"):
+            color_text = color_text[1:]
+
+        if len(color_text) != 6 or any(character not in "0123456789abcdefABCDEF" for character in color_text):
+            raise ValueError("颜色必须是 6 位十六进制数值，例如 66CCFF 或 #66CCFF。")
+
+        return f"#{color_text.lower()}"
 
     def parse_time_tick_density(self) -> int:
         density_value = int(round(float(self.time_density_var.get())))
