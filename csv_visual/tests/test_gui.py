@@ -31,6 +31,7 @@ class GuiBehaviorTests(unittest.TestCase):
             app.data = data
             app.selected_column_indices = {2}
             app.column_colors = {2: "#123456"}
+            app.configure_trim_controls()
             app.width_var.set("1600")
             app.height_var.set("900")
             app.dpi_var.set("144")
@@ -38,6 +39,8 @@ class GuiBehaviorTests(unittest.TestCase):
             app.time_density_var.set(10)
             app.fixed_time_interval_var.set("2")
             app.fixed_time_interval_unit_var.set("分钟")
+            app.trim_start_var.set(1)
+            app.trim_end_var.set(2)
 
             with patch.object(app.preview_scroll_canvas, "winfo_width", return_value=824), patch.object(
                 app.preview_scroll_canvas,
@@ -53,6 +56,7 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.style.title, "预览测试")
             self.assertEqual(preview_request.style.time_tick_density, 10)
             self.assertEqual(preview_request.style.fixed_time_interval_seconds, 120)
+            self.assertEqual(preview_request.visible_range_seconds, (1.0, 2.0))
         finally:
             app.on_close()
 

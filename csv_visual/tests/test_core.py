@@ -5,8 +5,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from matplotlib import dates as mdates
-
 from hwinfo_plotter.core import (
     ChartStyle,
     HWiNFOData,
@@ -198,11 +196,10 @@ class CoreSmokeTests(unittest.TestCase):
         )
         axis = figure.axes[0]
         locator = axis.xaxis.get_major_locator()
-        tick_values = locator.tick_values(timestamps[0], timestamps[-1])
-        tick_datetimes = mdates.num2date(tick_values)
+        tick_values = locator.tick_values(0, 30 * 60)
         minute_diffs = [
-            (tick_datetimes[index + 1] - tick_datetimes[index]).total_seconds() / 60
-            for index in range(len(tick_datetimes) - 1)
+            (tick_values[index + 1] - tick_values[index]) / 60
+            for index in range(len(tick_values) - 1)
         ]
 
         self.assertTrue(minute_diffs)
@@ -235,15 +232,44 @@ class CoreSmokeTests(unittest.TestCase):
         )
         axis = figure.axes[0]
         locator = axis.xaxis.get_major_locator()
-        tick_values = locator.tick_values(timestamps[0], timestamps[-1])
-        tick_datetimes = mdates.num2date(tick_values)
+        tick_values = locator.tick_values(0, 30 * 60)
         minute_diffs = [
-            (tick_datetimes[index + 1] - tick_datetimes[index]).total_seconds() / 60
-            for index in range(len(tick_datetimes) - 1)
+            (tick_values[index + 1] - tick_values[index]) / 60
+            for index in range(len(tick_values) - 1)
         ]
 
         self.assertTrue(minute_diffs)
         self.assertTrue(all(abs(diff - 2) < 1e-6 for diff in minute_diffs))
+
+    def test_build_figure_trims_visible_range(self) -> None:
+        base_time = datetime(2026, 4, 13, 12, 0, 0)
+        timestamps = [base_time + timedelta(seconds=index) for index in range(10)]
+        data = HWiNFOData(
+            source_path=Path("synthetic.csv"),
+            encoding="utf-8",
+            headers=["Date", "Time", "CPU"],
+            columns=[SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU")],
+            timestamps=timestamps,
+            rows=[
+                ["13/04/2026", f"12:00:{index:02d}", f"{float(index):.1f}"]
+                for index in range(10)
+            ],
+        )
+
+        figure = build_figure(
+            data,
+            [2],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            visible_range_seconds=(2, 6),
+        )
+        axis = figure.axes[0]
+        x_data = list(axis.lines[0].get_xdata())
+
+        self.assertEqual(x_data[0], 2)
+        self.assertEqual(x_data[-1], 6)
+        self.assertEqual(axis.get_xlim(), (2, 6))
 
 
 if __name__ == "__main__":

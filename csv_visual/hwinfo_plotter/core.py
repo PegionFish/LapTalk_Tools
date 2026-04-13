@@ -10,10 +10,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from dateutil.rrule import HOURLY, MINUTELY, SECONDLY
-from matplotlib import dates as mdates
 from matplotlib import font_manager, rcParams
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter, MultipleLocator
 
 ENCODING_CANDIDATES = (
     "utf-8-sig",
@@ -89,6 +88,7 @@ class HWiNFOData:
     columns: list[SensorColumn]
     timestamps: list[datetime]
     rows: list[list[str]]
+    elapsed_seconds: list[float] = field(default_factory=list)
     skipped_rows: int = 0
     _column_map: dict[int, SensorColumn] = field(default_factory=dict, init=False, repr=False)
     _column_indices: tuple[int, ...] = field(default_factory=tuple, init=False, repr=False)
@@ -96,6 +96,8 @@ class HWiNFOData:
     _all_series_preloaded: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        if not self.elapsed_seconds and self.timestamps:
+            self.elapsed_seconds = build_elapsed_seconds(self.timestamps)
         self._column_map = {column.index: column for column in self.columns}
         self._column_indices = tuple(column.index for column in self.columns)
 
@@ -105,15 +107,15 @@ class HWiNFOData:
         except KeyError as exc:
             raise KeyError(f"未找到列索引 {column_index}") from exc
 
-    def extract_series(self, column_index: int) -> tuple[list[datetime], list[float]]:
+    def extract_series(self, column_index: int) -> tuple[list[float], list[float]]:
         cached_series = self._series_cache.get(column_index)
         if cached_series is not None:
             return cached_series
 
-        x_values: list[datetime] = []
+        x_values: list[float] = []
         y_values: list[float] = []
 
-        for timestamp, row in zip(self.timestamps, self.rows):
+        for elapsed_seconds, row in zip(self.elapsed_seconds, self.rows):
             if column_index >= len(row):
                 continue
 
@@ -121,7 +123,7 @@ class HWiNFOData:
             if numeric_value is None:
                 continue
 
-            x_values.append(timestamp)
+            x_values.append(elapsed_seconds)
             y_values.append(numeric_value)
 
         series = (x_values, y_values)
@@ -135,7 +137,7 @@ class HWiNFOData:
         x_series_map = {column_index: [] for column_index in self._column_indices}
         y_series_map = {column_index: [] for column_index in self._column_indices}
 
-        for timestamp, row in zip(self.timestamps, self.rows):
+        for elapsed_seconds, row in zip(self.elapsed_seconds, self.rows):
             for column_index in self._column_indices:
                 if column_index >= len(row):
                     continue
@@ -144,7 +146,7 @@ class HWiNFOData:
                 if numeric_value is None:
                     continue
 
-                x_series_map[column_index].append(timestamp)
+                x_series_map[column_index].append(elapsed_seconds)
                 y_series_map[column_index].append(numeric_value)
 
         self._series_cache = {
@@ -202,6 +204,7 @@ def load_hwinfo_csv(path: Path | str, preload_numeric: bool = False) -> HWiNFODa
         headers=headers,
         columns=columns,
         timestamps=timestamps,
+        elapsed_seconds=build_elapsed_seconds(timestamps),
         rows=rows,
         skipped_rows=skipped_rows,
     )
@@ -221,6 +224,7 @@ def build_figure(
     dpi: int = 160,
     style: ChartStyle | None = None,
     color_by_column: Mapping[int, str] | None = None,
+    visible_range_seconds: tuple[float, float] | None = None,
 ) -> Figure:
     if not column_indices:
         raise ValueError("至少需要选择一个参数。")
@@ -242,6 +246,7 @@ def build_figure(
         )
     if chart_style.fixed_time_interval_seconds is not None and chart_style.fixed_time_interval_seconds <= 0:
         raise ValueError("固定时间刻度间隔必须大于 0。")
+    visible_start_seconds, visible_end_seconds = resolve_visible_range_seconds(data, visible_range_seconds)
 
     configure_matplotlib_fonts()
 
@@ -254,12 +259,20 @@ def build_figure(
     figure.patch.set_alpha(0.0)
     axis.set_facecolor("none")
 
-    configure_time_axis(axis, data.timestamps, chart_style)
+    configure_time_axis(axis, visible_start_seconds, visible_end_seconds, chart_style)
 
     plotted_line_count = 0
     for column_index in column_indices:
         sensor_column = data.column_for_index(column_index)
         x_values, y_values = data.extract_series(column_index)
+        if not y_values:
+            continue
+        x_values, y_values = trim_series_to_range(
+            x_values,
+            y_values,
+            visible_start_seconds,
+            visible_end_seconds,
+        )
         if not y_values:
             continue
         line_kwargs: dict[str, object] = {}
@@ -454,6 +467,14 @@ def parse_timestamp(date_text: str, time_text: str) -> datetime:
     return datetime(year, month, day, hour, minute, second, microsecond)
 
 
+def build_elapsed_seconds(timestamps: Sequence[datetime]) -> list[float]:
+    if not timestamps:
+        return []
+
+    base_timestamp = timestamps[0]
+    return [(timestamp - base_timestamp).total_seconds() for timestamp in timestamps]
+
+
 def parse_numeric_value(raw_value: str) -> float | None:
     cleaned = raw_value.strip().replace("\u00a0", "").replace("\u202f", "").replace(" ", "")
     if not cleaned:
@@ -491,55 +512,104 @@ def resolve_chart_style(style: ChartStyle | None, title: str | None = None) -> C
     return style
 
 
-def configure_time_axis(axis, timestamps: Sequence[datetime], chart_style: ChartStyle) -> None:
-    locator = build_time_locator(timestamps, chart_style)
-    formatter = build_time_formatter(timestamps)
+def resolve_visible_range_seconds(
+    data: HWiNFOData,
+    visible_range_seconds: tuple[float, float] | None,
+) -> tuple[float, float]:
+    if not data.elapsed_seconds:
+        return 0.0, 1.0
+
+    data_start = data.elapsed_seconds[0]
+    data_end = data.elapsed_seconds[-1]
+    if visible_range_seconds is None:
+        return data_start, data_end if data_end > data_start else data_start + 1.0
+
+    start_seconds, end_seconds = visible_range_seconds
+    start_seconds = max(data_start, float(start_seconds))
+    end_seconds = min(data_end, float(end_seconds))
+    if end_seconds <= start_seconds:
+        end_seconds = start_seconds + 1.0
+    return start_seconds, end_seconds
+
+
+def trim_series_to_range(
+    x_values: Sequence[float],
+    y_values: Sequence[float],
+    start_seconds: float,
+    end_seconds: float,
+) -> tuple[list[float], list[float]]:
+    filtered_pairs = [
+        (x_value, y_value)
+        for x_value, y_value in zip(x_values, y_values)
+        if start_seconds <= x_value <= end_seconds
+    ]
+    if not filtered_pairs:
+        return [], []
+
+    filtered_x_values, filtered_y_values = zip(*filtered_pairs)
+    return list(filtered_x_values), list(filtered_y_values)
+
+
+def configure_time_axis(axis, start_seconds: float, end_seconds: float, chart_style: ChartStyle) -> None:
+    locator = build_time_locator(start_seconds, end_seconds, chart_style)
+    formatter = FuncFormatter(format_elapsed_time)
     axis.xaxis.set_major_locator(locator)
     axis.xaxis.set_major_formatter(formatter)
     axis.xaxis.get_offset_text().set_visible(False)
+    axis.set_xlim(start_seconds, end_seconds)
 
 
-def build_time_locator(timestamps: Sequence[datetime], chart_style: ChartStyle):
+def build_time_locator(start_seconds: float, end_seconds: float, chart_style: ChartStyle):
     if chart_style.fixed_time_interval_seconds is not None:
         return build_fixed_interval_locator(chart_style.fixed_time_interval_seconds)
 
-    minticks, maxticks = resolve_tick_density(chart_style.time_tick_density)
-    locator = mdates.AutoDateLocator(minticks=minticks, maxticks=maxticks, interval_multiples=True)
-    locator.intervald[mdates.MINUTELY] = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
-    locator.intervald[mdates.HOURLY] = [1, 2, 3, 4, 6, 8, 12]
-    locator.intervald[mdates.SECONDLY] = [1, 2, 5, 10, 15, 20, 30]
-    return locator
+    span_seconds = max(end_seconds - start_seconds, 1.0)
+    interval_seconds = resolve_tick_interval_seconds(span_seconds, chart_style.time_tick_density)
+    return MultipleLocator(interval_seconds)
 
 
-def build_time_formatter(timestamps: Sequence[datetime]):
-    if not timestamps:
-        return mdates.DateFormatter("%H:%M")
-
-    time_span = timestamps[-1] - timestamps[0]
-    total_seconds = max(time_span.total_seconds(), 0)
-    if total_seconds <= 30 * 60:
-        return mdates.DateFormatter("%H:%M:%S")
-    if total_seconds <= 12 * 60 * 60:
-        return mdates.DateFormatter("%H:%M")
-    if total_seconds <= 7 * 24 * 60 * 60:
-        return mdates.DateFormatter("%m-%d %H:%M")
-    return mdates.DateFormatter("%Y-%m-%d %H:%M")
+def format_elapsed_time(value: float, _position=None) -> str:
+    total_seconds = max(0, int(round(value)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def resolve_tick_density(time_tick_density: int) -> tuple[int, int]:
-    minticks = 4 + time_tick_density
-    maxticks = 8 + time_tick_density * 2
-    return minticks, maxticks
+def resolve_tick_interval_seconds(span_seconds: float, time_tick_density: int) -> int:
+    target_tick_count = 4 + time_tick_density * 2
+    ideal_interval_seconds = span_seconds / max(target_tick_count, 1)
+    candidate_intervals = [
+        1,
+        2,
+        5,
+        10,
+        15,
+        20,
+        30,
+        60,
+        120,
+        180,
+        240,
+        300,
+        600,
+        900,
+        1200,
+        1800,
+        3600,
+        7200,
+        10800,
+        14400,
+        21600,
+        43200,
+    ]
+    return min(
+        candidate_intervals,
+        key=lambda interval_seconds: abs(interval_seconds - ideal_interval_seconds),
+    )
 
 
 def build_fixed_interval_locator(fixed_time_interval_seconds: int):
-    if fixed_time_interval_seconds % 3600 == 0:
-        rule = mdates.rrulewrapper(HOURLY, interval=fixed_time_interval_seconds // 3600)
-    elif fixed_time_interval_seconds % 60 == 0:
-        rule = mdates.rrulewrapper(MINUTELY, interval=fixed_time_interval_seconds // 60)
-    else:
-        rule = mdates.rrulewrapper(SECONDLY, interval=fixed_time_interval_seconds)
-    return mdates.RRuleLocator(rule)
+    return MultipleLocator(fixed_time_interval_seconds)
 
 
 def configure_matplotlib_fonts() -> None:

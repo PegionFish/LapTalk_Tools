@@ -17,6 +17,7 @@ from .core import (
     MIN_TIME_TICK_DENSITY,
     build_default_output_name,
     build_figure,
+    format_elapsed_time,
     load_hwinfo_csv,
     save_figure,
 )
@@ -51,6 +52,7 @@ class PreviewRenderRequest:
     dpi: int
     style: ChartStyle
     color_by_column: dict[int, str]
+    visible_range_seconds: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +98,12 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_density_label_var = tk.StringVar()
         self.fixed_time_interval_var = tk.StringVar()
         self.fixed_time_interval_unit_var = tk.StringVar(value="自动")
+        self.trim_start_var = tk.DoubleVar(value=0.0)
+        self.trim_end_var = tk.DoubleVar(value=0.0)
+        self.trim_start_label_var = tk.StringVar(value="00:00:00")
+        self.trim_end_label_var = tk.StringVar(value="00:00:00")
+        self.trim_duration_label_var = tk.StringVar(value="可视化范围：00:00:00 → 00:00:00")
+        self._updating_trim_controls = False
         self.show_grid_var = tk.BooleanVar(value=True)
         self.show_legend_var = tk.BooleanVar(value=True)
         self.legend_location_var = tk.StringVar(value="自动")
@@ -117,6 +125,8 @@ class HWiNFOPlotterApp(tk.Tk):
         ):
             option_var.trace_add("write", self._on_chart_option_changed)
         self.time_density_var.trace_add("write", self._on_time_density_changed)
+        self.trim_start_var.trace_add("write", self._on_trim_start_changed)
+        self.trim_end_var.trace_add("write", self._on_trim_end_changed)
         self.update_time_density_label()
 
         self._build_layout()
@@ -258,8 +268,48 @@ class HWiNFOPlotterApp(tk.Tk):
         )
         legend_location_box.grid(row=6, column=1, columnspan=3, sticky="ew", pady=(8, 0))
 
+        trim_frame = ttk.Labelframe(control_panel, text="可视化范围", padding=12)
+        trim_frame.grid(row=6, column=0, sticky="ew", pady=(12, 0))
+        trim_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(trim_frame, text="起始裁剪").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.trim_start_scale = tk.Scale(
+            trim_frame,
+            from_=0,
+            to=0,
+            orient=tk.HORIZONTAL,
+            resolution=1,
+            showvalue=False,
+            variable=self.trim_start_var,
+            state=tk.DISABLED,
+        )
+        self.trim_start_scale.grid(row=0, column=1, sticky="ew")
+        ttk.Label(trim_frame, textvariable=self.trim_start_label_var, width=10).grid(row=0, column=2, sticky="e", padx=(8, 0))
+
+        ttk.Label(trim_frame, text="结束裁剪").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        self.trim_end_scale = tk.Scale(
+            trim_frame,
+            from_=0,
+            to=0,
+            orient=tk.HORIZONTAL,
+            resolution=1,
+            showvalue=False,
+            variable=self.trim_end_var,
+            state=tk.DISABLED,
+        )
+        self.trim_end_scale.grid(row=1, column=1, sticky="ew", pady=(8, 0))
+        ttk.Label(trim_frame, textvariable=self.trim_end_label_var, width=10).grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(8, 0))
+
+        ttk.Label(trim_frame, textvariable=self.trim_duration_label_var).grid(
+            row=2,
+            column=0,
+            columnspan=3,
+            sticky="w",
+            pady=(8, 0),
+        )
+
         series_style_frame = ttk.Labelframe(control_panel, text="参数颜色", padding=12)
-        series_style_frame.grid(row=6, column=0, sticky="nsew", pady=(12, 0))
+        series_style_frame.grid(row=7, column=0, sticky="nsew", pady=(12, 0))
         series_style_frame.columnconfigure(0, weight=1)
         series_style_frame.rowconfigure(0, weight=1)
 
@@ -303,7 +353,7 @@ class HWiNFOPlotterApp(tk.Tk):
         )
 
         action_row = ttk.Frame(control_panel)
-        action_row.grid(row=7, column=0, sticky="ew", pady=(12, 0))
+        action_row.grid(row=8, column=0, sticky="ew", pady=(12, 0))
         action_row.columnconfigure((0, 1), weight=1)
 
         ttk.Button(action_row, text="重置样式", command=self.reset_chart_options).grid(row=0, column=0, sticky="ew", padx=(0, 4))
@@ -377,6 +427,79 @@ class HWiNFOPlotterApp(tk.Tk):
         density_value = self.parse_time_tick_density()
         self.time_density_label_var.set(f"{density_value}")
 
+    def _on_trim_start_changed(self, *_args) -> None:
+        if self._updating_trim_controls:
+            return
+
+        self._updating_trim_controls = True
+        try:
+            start_seconds = self.trim_start_var.get()
+            end_seconds = self.trim_end_var.get()
+            if start_seconds > end_seconds:
+                self.trim_end_var.set(start_seconds)
+            self.update_trim_labels()
+        finally:
+            self._updating_trim_controls = False
+
+        if self.data:
+            self.schedule_preview_refresh()
+
+    def _on_trim_end_changed(self, *_args) -> None:
+        if self._updating_trim_controls:
+            return
+
+        self._updating_trim_controls = True
+        try:
+            start_seconds = self.trim_start_var.get()
+            end_seconds = self.trim_end_var.get()
+            if end_seconds < start_seconds:
+                self.trim_start_var.set(end_seconds)
+            self.update_trim_labels()
+        finally:
+            self._updating_trim_controls = False
+
+        if self.data:
+            self.schedule_preview_refresh()
+
+    def update_trim_labels(self) -> None:
+        start_seconds = self.trim_start_var.get()
+        end_seconds = self.trim_end_var.get()
+        self.trim_start_label_var.set(format_elapsed_time(start_seconds))
+        self.trim_end_label_var.set(format_elapsed_time(end_seconds))
+        self.trim_duration_label_var.set(
+            f"可视化范围：{format_elapsed_time(start_seconds)} → {format_elapsed_time(end_seconds)}"
+        )
+
+    def configure_trim_controls(self) -> None:
+        total_duration_seconds = self.get_total_duration_seconds()
+        slider_state = tk.NORMAL if total_duration_seconds > 0 else tk.DISABLED
+        for slider in (self.trim_start_scale, self.trim_end_scale):
+            slider.configure(from_=0, to=total_duration_seconds, state=slider_state)
+
+        self._updating_trim_controls = True
+        try:
+            self.trim_start_var.set(0)
+            self.trim_end_var.set(total_duration_seconds)
+            self.update_trim_labels()
+        finally:
+            self._updating_trim_controls = False
+
+    def get_total_duration_seconds(self) -> int:
+        if not self.data or not self.data.elapsed_seconds:
+            return 0
+        return max(0, int(round(self.data.elapsed_seconds[-1])))
+
+    def get_visible_range_seconds(self) -> tuple[float, float] | None:
+        if not self.data or not self.data.elapsed_seconds:
+            return None
+
+        total_duration_seconds = self.data.elapsed_seconds[-1]
+        start_seconds = max(0.0, min(float(self.trim_start_var.get()), total_duration_seconds))
+        end_seconds = max(0.0, min(float(self.trim_end_var.get()), total_duration_seconds))
+        if end_seconds < start_seconds:
+            start_seconds, end_seconds = end_seconds, start_seconds
+        return start_seconds, end_seconds
+
     def _on_preview_host_configure(self, _event=None) -> None:
         self.update_preview_scroll_region()
 
@@ -430,6 +553,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.column_colors.clear()
         self.refresh_column_list()
         self.refresh_selected_series_list()
+        self.configure_trim_controls()
         self.clear_preview()
         self.status_var.set(
             f"已加载 {self.data.source_path.name}，共 {len(self.data.timestamps)} 行有效数据，"
@@ -644,7 +768,15 @@ class HWiNFOPlotterApp(tk.Tk):
         self.status_var.set(f"已导出透明 PNG：{destination}")
 
     def build_current_figure(self, *, preview: bool = False):
-        selected_columns, width_px, height_px, dpi, style, color_by_column = self.collect_render_options(preview=preview)
+        (
+            selected_columns,
+            width_px,
+            height_px,
+            dpi,
+            style,
+            color_by_column,
+            visible_range_seconds,
+        ) = self.collect_render_options(preview=preview)
         if not self.data:
             raise ValueError("请先加载一个 CSV 文件。")
 
@@ -656,10 +788,19 @@ class HWiNFOPlotterApp(tk.Tk):
             dpi=dpi,
             style=style,
             color_by_column=color_by_column,
+            visible_range_seconds=visible_range_seconds,
         )
 
     def build_preview_request(self) -> PreviewRenderRequest:
-        selected_columns, width_px, height_px, dpi, style, color_by_column = self.collect_render_options(preview=True)
+        (
+            selected_columns,
+            width_px,
+            height_px,
+            dpi,
+            style,
+            color_by_column,
+            visible_range_seconds,
+        ) = self.collect_render_options(preview=True)
         if not self.data:
             raise ValueError("请先加载一个 CSV 文件。")
 
@@ -674,13 +815,14 @@ class HWiNFOPlotterApp(tk.Tk):
             dpi=dpi,
             style=style,
             color_by_column=color_by_column,
+            visible_range_seconds=visible_range_seconds,
         )
 
     def collect_render_options(
         self,
         *,
         preview: bool,
-    ) -> tuple[list[int], int, int, int, ChartStyle, dict[int, str]]:
+    ) -> tuple[list[int], int, int, int, ChartStyle, dict[int, str], tuple[float, float] | None]:
         selected_columns = self.get_selected_columns()
         if not selected_columns:
             raise ValueError("请至少选择一个参数。")
@@ -705,8 +847,9 @@ class HWiNFOPlotterApp(tk.Tk):
             for column_index, color_text in self.column_colors.items()
             if column_index in self.selected_column_indices
         }
+        visible_range_seconds = self.get_visible_range_seconds()
 
-        return selected_columns, width_px, height_px, dpi, style, color_by_column
+        return selected_columns, width_px, height_px, dpi, style, color_by_column, visible_range_seconds
 
     def get_preview_render_options(self, width_px: int, height_px: int, dpi: int) -> tuple[int, int, int]:
         available_width = max(1, self.preview_scroll_canvas.winfo_width() - PREVIEW_PADDING)
@@ -766,6 +909,7 @@ class HWiNFOPlotterApp(tk.Tk):
                     dpi=preview_request.dpi,
                     style=preview_request.style,
                     color_by_column=preview_request.color_by_column,
+                    visible_range_seconds=preview_request.visible_range_seconds,
                 )
             except Exception as exc:
                 self.preview_results.put(
