@@ -44,6 +44,18 @@ class GuiBehaviorTests(unittest.TestCase):
         self.assertIsNone(HWiNFOPlotterApp.parse_optional_hex_color("", "网格颜色"))
         self.assertEqual(HWiNFOPlotterApp.parse_optional_hex_color("66CCFF", "网格颜色"), "#66ccff")
 
+    def test_pick_csv_drop_path_uses_first_csv_file(self) -> None:
+        self.assertEqual(
+            HWiNFOPlotterApp.pick_csv_drop_path(
+                (
+                    r"C:\logs\notes.txt",
+                    r"C:\logs\R23-15.CSV",
+                    r"C:\logs\other.csv",
+                )
+            ),
+            r"C:\logs\R23-15.CSV",
+        )
+
     def test_fit_size_within_bounds_preserves_aspect_ratio(self) -> None:
         self.assertEqual(fit_size_within_bounds(1600, 900, 800, 800), (800, 450))
         self.assertEqual(fit_size_within_bounds(900, 1600, 800, 800), (450, 800))
@@ -263,6 +275,40 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(app.filter_var.get(), "")
             self.assertEqual(app.visible_column_indices, [2, 3])
             self.assertEqual(app.column_listbox.get(0, "end"), ("[002] CPU", "[003] GPU"))
+        finally:
+            app.on_close()
+
+    def test_handle_dropped_files_loads_first_csv_path(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+
+            with patch.object(app, "load_current_file") as mock_load:
+                app.handle_dropped_files(
+                    (
+                        r"C:\logs\notes.txt",
+                        r"C:\logs\R23-15.CSV",
+                    )
+                )
+
+            self.assertEqual(app.file_var.get(), r"C:\logs\R23-15.CSV")
+            mock_load.assert_called_once_with()
+        finally:
+            app.on_close()
+
+    def test_handle_dropped_files_reports_missing_csv(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+
+            with patch("hwinfo_plotter.gui.messagebox.showerror") as mock_error, patch.object(
+                app,
+                "load_current_file",
+            ) as mock_load:
+                app.handle_dropped_files((r"C:\logs\notes.txt",))
+
+            mock_error.assert_called_once_with("未找到 CSV", "请拖入 .csv 或 .CSV 文件。")
+            mock_load.assert_not_called()
         finally:
             app.on_close()
 

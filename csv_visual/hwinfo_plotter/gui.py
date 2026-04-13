@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import base64
+import ctypes
+import sys
 import threading
 import tkinter as tk
+from collections.abc import Callable, Sequence
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
@@ -39,6 +43,150 @@ TIME_INTERVAL_UNIT_CHOICES = {
     "分钟": 60,
     "小时": 3600,
 }
+WINDOWS_DROP_MESSAGE = 0x0233
+WINDOWS_WINDOW_PROC_INDEX = -4
+WINDOWS_DRAG_QUERY_ALL_FILES = 0xFFFFFFFF
+WINDOWS_LONG_PTR = ctypes.c_ssize_t
+WINDOWS_LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
+
+
+class WindowsFileDropManager:
+    def __init__(self, root: tk.Misc, on_drop: Callable[[tuple[str, ...]], None]) -> None:
+        self.root = root
+        self.on_drop = on_drop
+        self._user32 = None
+        self._shell32 = None
+        self._set_window_long_ptr = None
+        self._window_proc_callback = None
+        self._window_proc_pointer: int | None = None
+        self._old_window_procs: dict[int, int] = {}
+
+    def register(self) -> bool:
+        if sys.platform != "win32":
+            return False
+
+        try:
+            self._load_win32_api()
+            self.root.update_idletasks()
+            for widget in self._iter_widgets(self.root):
+                self._register_widget(widget)
+        except (AttributeError, OSError, tk.TclError, ctypes.ArgumentError):
+            self.unregister()
+            return False
+
+        return bool(self._old_window_procs)
+
+    def unregister(self) -> None:
+        if self._user32 is None or self._shell32 is None or self._set_window_long_ptr is None:
+            return
+
+        for window_handle, old_window_proc in list(self._old_window_procs.items()):
+            try:
+                self._shell32.DragAcceptFiles(wintypes.HWND(window_handle), False)
+                self._set_window_long_ptr(
+                    wintypes.HWND(window_handle),
+                    WINDOWS_WINDOW_PROC_INDEX,
+                    old_window_proc,
+                )
+            except (OSError, ctypes.ArgumentError):
+                pass
+
+        self._old_window_procs.clear()
+
+    def _load_win32_api(self) -> None:
+        if self._user32 is not None:
+            return
+
+        self._user32 = ctypes.windll.user32
+        self._shell32 = ctypes.windll.shell32
+        self._set_window_long_ptr = getattr(self._user32, "SetWindowLongPtrW", self._user32.SetWindowLongW)
+        self._set_window_long_ptr.argtypes = [wintypes.HWND, ctypes.c_int, WINDOWS_LONG_PTR]
+        self._set_window_long_ptr.restype = WINDOWS_LONG_PTR
+        self._user32.CallWindowProcW.argtypes = [
+            WINDOWS_LONG_PTR,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        self._user32.CallWindowProcW.restype = WINDOWS_LRESULT
+        self._user32.DefWindowProcW.argtypes = [
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        ]
+        self._user32.DefWindowProcW.restype = WINDOWS_LRESULT
+        self._shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
+        self._shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+        self._shell32.DragQueryFileW.restype = wintypes.UINT
+        self._shell32.DragFinish.argtypes = [wintypes.HANDLE]
+        self._shell32.DragFinish.restype = None
+
+        window_proc_factory = ctypes.WINFUNCTYPE(
+            WINDOWS_LRESULT,
+            wintypes.HWND,
+            wintypes.UINT,
+            wintypes.WPARAM,
+            wintypes.LPARAM,
+        )
+        self._window_proc_callback = window_proc_factory(self._window_proc)
+        self._window_proc_pointer = ctypes.cast(self._window_proc_callback, ctypes.c_void_p).value
+
+    def _register_widget(self, widget: tk.Misc) -> None:
+        if self._shell32 is None or self._set_window_long_ptr is None or self._window_proc_pointer is None:
+            return
+
+        window_handle = int(widget.winfo_id())
+        if window_handle in self._old_window_procs:
+            return
+
+        old_window_proc = self._set_window_long_ptr(
+            wintypes.HWND(window_handle),
+            WINDOWS_WINDOW_PROC_INDEX,
+            self._window_proc_pointer,
+        )
+        if not old_window_proc:
+            return
+
+        self._old_window_procs[window_handle] = int(old_window_proc)
+        self._shell32.DragAcceptFiles(wintypes.HWND(window_handle), True)
+
+    def _window_proc(self, window_handle, message, w_param, l_param):
+        if message == WINDOWS_DROP_MESSAGE:
+            dropped_paths = self._extract_dropped_paths(w_param)
+            self.root.after(0, lambda paths=dropped_paths: self.on_drop(paths))
+            return 0
+
+        if self._user32 is None:
+            return 0
+
+        old_window_proc = self._old_window_procs.get(int(window_handle))
+        if old_window_proc:
+            return self._user32.CallWindowProcW(old_window_proc, window_handle, message, w_param, l_param)
+
+        return self._user32.DefWindowProcW(window_handle, message, w_param, l_param)
+
+    def _extract_dropped_paths(self, drop_handle) -> tuple[str, ...]:
+        if self._shell32 is None:
+            return ()
+
+        try:
+            file_count = self._shell32.DragQueryFileW(drop_handle, WINDOWS_DRAG_QUERY_ALL_FILES, None, 0)
+            dropped_paths: list[str] = []
+            for file_index in range(file_count):
+                path_length = self._shell32.DragQueryFileW(drop_handle, file_index, None, 0)
+                path_buffer = ctypes.create_unicode_buffer(path_length + 1)
+                self._shell32.DragQueryFileW(drop_handle, file_index, path_buffer, path_length + 1)
+                dropped_paths.append(path_buffer.value)
+            return tuple(dropped_paths)
+        finally:
+            self._shell32.DragFinish(drop_handle)
+
+    def _iter_widgets(self, widget: tk.Misc):
+        yield widget
+        for child_widget in widget.winfo_children():
+            yield from self._iter_widgets(child_widget)
 
 
 def fit_size_within_bounds(
@@ -116,6 +264,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_request_lock = threading.Lock()
         self.preview_request_event = threading.Event()
         self.preview_shutdown_event = threading.Event()
+        self.file_drop_manager: WindowsFileDropManager | None = None
         self.preview_worker = threading.Thread(target=self._preview_worker_loop, name="csv-visual-preview", daemon=True)
         self.preview_worker.start()
         self.preload_request_id = 0
@@ -152,7 +301,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.show_value_axis_var = tk.BooleanVar(value=True)
         self.legend_location_var = tk.StringVar(value="自动")
         self.selection_var = tk.StringVar(value="当前未选择参数")
-        self.status_var = tk.StringVar(value="请选择一个 HWiNFO CSV 文件。")
+        self.status_var = tk.StringVar(value="请选择或拖入一个 HWiNFO CSV 文件。")
         self.series_color_var = tk.StringVar()
         self.axis_color_var = tk.StringVar()
         self.grid_color_var = tk.StringVar()
@@ -189,6 +338,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.update_time_density_label()
 
         self._build_layout()
+        self.enable_file_drop()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(80, self.process_preview_results)
 
@@ -529,7 +679,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.preview_placeholder = ttk.Label(
             self.preview_host,
-            text="加载 CSV 并选择参数后，图表会按当前配置自动预览。",
+            text="浏览或拖入 CSV 并选择参数后，图表会按当前配置自动预览。",
             anchor="center",
             justify="center",
         )
@@ -745,10 +895,31 @@ class HWiNFOPlotterApp(tk.Tk):
         self.file_var.set(file_path)
         self.load_current_file()
 
+    def enable_file_drop(self) -> None:
+        file_drop_manager = WindowsFileDropManager(self, self.handle_dropped_files)
+        if file_drop_manager.register():
+            self.file_drop_manager = file_drop_manager
+
+    def handle_dropped_files(self, file_paths: Sequence[str]) -> None:
+        csv_path = self.pick_csv_drop_path(file_paths)
+        if csv_path is None:
+            messagebox.showerror("未找到 CSV", "请拖入 .csv 或 .CSV 文件。")
+            return
+
+        self.file_var.set(csv_path)
+        self.load_current_file()
+
+    @staticmethod
+    def pick_csv_drop_path(file_paths: Sequence[str]) -> str | None:
+        for file_path in file_paths:
+            if Path(file_path).suffix.lower() == ".csv":
+                return file_path
+        return None
+
     def load_current_file(self) -> None:
         file_text = self.file_var.get().strip()
         if not file_text:
-            messagebox.showerror("未选择文件", "请先选择一个 CSV 文件。")
+            messagebox.showerror("未选择文件", "请先选择或拖入一个 CSV 文件。")
             return
 
         self.cancel_pending_preview_requests()
@@ -1253,6 +1424,9 @@ class HWiNFOPlotterApp(tk.Tk):
                 self.after(80, self.process_preview_results)
 
     def on_close(self) -> None:
+        if self.file_drop_manager is not None:
+            self.file_drop_manager.unregister()
+            self.file_drop_manager = None
         self.preview_shutdown_event.set()
         self.preview_request_event.set()
         self.preload_request_event.set()
