@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import threading
 import tkinter as tk
+from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Queue
 from tkinter import filedialog, messagebox, ttk
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -24,6 +27,25 @@ PREVIEW_MAX_DPI = 100
 PREVIEW_MAX_POINTS_PER_SERIES = 3000
 
 
+@dataclass(frozen=True)
+class PreviewRenderRequest:
+    request_id: int
+    data: HWiNFOData
+    selected_columns: tuple[int, ...]
+    width_px: int
+    height_px: int
+    dpi: int
+    style: ChartStyle
+    max_points_per_series: int | None = None
+
+
+@dataclass(frozen=True)
+class PreviewRenderResult:
+    request_id: int
+    figure: object | None = None
+    error_message: str | None = None
+
+
 class HWiNFOPlotterApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -37,6 +59,15 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_canvas: FigureCanvasTkAgg | None = None
         self.preview_figure = None
         self.preview_after_id: str | None = None
+        self.preview_request_id = 0
+        self.active_preview_request_id = 0
+        self.pending_preview_request: PreviewRenderRequest | None = None
+        self.preview_results: Queue[PreviewRenderResult] = Queue()
+        self.preview_request_lock = threading.Lock()
+        self.preview_request_event = threading.Event()
+        self.preview_shutdown_event = threading.Event()
+        self.preview_worker = threading.Thread(target=self._preview_worker_loop, name="csv-visual-preview", daemon=True)
+        self.preview_worker.start()
 
         self.file_var = tk.StringVar(value=self._find_default_csv())
         self.filter_var = tk.StringVar()
@@ -69,6 +100,8 @@ class HWiNFOPlotterApp(tk.Tk):
             option_var.trace_add("write", self._on_chart_option_changed)
 
         self._build_layout()
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.after(80, self.process_preview_results)
 
         if self.file_var.get():
             self.after(100, self.load_current_file)
@@ -238,8 +271,12 @@ class HWiNFOPlotterApp(tk.Tk):
             messagebox.showerror("未选择文件", "请先选择一个 CSV 文件。")
             return
 
+        self.cancel_pending_preview_requests()
+        self.status_var.set("正在加载 CSV 并预计算全部列数据，请稍候...")
+        self.update_idletasks()
+
         try:
-            self.data = load_hwinfo_csv(file_text)
+            self.data = load_hwinfo_csv(file_text, preload_numeric=True)
         except Exception as exc:
             messagebox.showerror("加载失败", str(exc))
             self.status_var.set("CSV 加载失败。")
@@ -250,7 +287,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self.clear_preview()
         self.status_var.set(
             f"已加载 {self.data.source_path.name}，共 {len(self.data.timestamps)} 行有效数据，"
-            f"{len(self.data.columns)} 个可选参数，编码：{self.data.encoding}。选择参数后会自动预览。"
+            f"{len(self.data.columns)} 个可选参数，编码：{self.data.encoding}。"
+            "数值列已预载入内存，选择参数后会在后台自动预览。"
         )
         self.schedule_preview_refresh(immediate=True)
 
@@ -307,6 +345,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.selected_column_indices.clear()
         self.column_listbox.selection_clear(0, tk.END)
         self.update_selection_label()
+        self.cancel_pending_preview_requests()
         self.clear_preview()
         self.status_var.set("已清空选择。")
         self.schedule_preview_refresh(immediate=True)
@@ -339,21 +378,23 @@ class HWiNFOPlotterApp(tk.Tk):
     def refresh_preview(self) -> None:
         self.preview_after_id = None
         if not self.data:
+            self.cancel_pending_preview_requests()
             self.clear_preview()
             return
 
         if not self.get_selected_columns():
+            self.cancel_pending_preview_requests()
             self.clear_preview()
             return
 
         try:
-            figure = self.build_current_figure(preview=True)
+            preview_request = self.build_preview_request()
         except Exception as exc:
             self.status_var.set(f"自动预览未更新：{exc}")
             return
 
-        self.show_figure(figure)
-        self.status_var.set("图表预览已自动更新。")
+        self.enqueue_preview_request(preview_request)
+        self.status_var.set("正在后台生成图表预览...")
 
     def export_png(self) -> None:
         if not self.data:
@@ -385,9 +426,43 @@ class HWiNFOPlotterApp(tk.Tk):
         self.status_var.set(f"已导出透明 PNG：{destination}")
 
     def build_current_figure(self, *, preview: bool = False):
+        selected_columns, width_px, height_px, dpi, style, max_points_per_series = self.collect_render_options(preview=preview)
         if not self.data:
             raise ValueError("请先加载一个 CSV 文件。")
 
+        return build_figure(
+            self.data,
+            selected_columns,
+            width_px=width_px,
+            height_px=height_px,
+            dpi=dpi,
+            style=style,
+            max_points_per_series=max_points_per_series,
+        )
+
+    def build_preview_request(self) -> PreviewRenderRequest:
+        selected_columns, width_px, height_px, dpi, style, max_points_per_series = self.collect_render_options(preview=True)
+        if not self.data:
+            raise ValueError("请先加载一个 CSV 文件。")
+
+        self.preview_request_id += 1
+        self.active_preview_request_id = self.preview_request_id
+        return PreviewRenderRequest(
+            request_id=self.preview_request_id,
+            data=self.data,
+            selected_columns=tuple(selected_columns),
+            width_px=width_px,
+            height_px=height_px,
+            dpi=dpi,
+            style=style,
+            max_points_per_series=max_points_per_series,
+        )
+
+    def collect_render_options(
+        self,
+        *,
+        preview: bool,
+    ) -> tuple[list[int], int, int, int, ChartStyle, int | None]:
         selected_columns = self.get_selected_columns()
         if not selected_columns:
             raise ValueError("请至少选择一个参数。")
@@ -410,15 +485,88 @@ class HWiNFOPlotterApp(tk.Tk):
             width_px, height_px, dpi = self.get_preview_render_options(width_px, height_px, dpi)
             max_points_per_series = PREVIEW_MAX_POINTS_PER_SERIES
 
-        return build_figure(
-            self.data,
-            selected_columns,
-            width_px=width_px,
-            height_px=height_px,
-            dpi=dpi,
-            style=style,
-            max_points_per_series=max_points_per_series,
-        )
+        return selected_columns, width_px, height_px, dpi, style, max_points_per_series
+
+    def enqueue_preview_request(self, preview_request: PreviewRenderRequest) -> None:
+        with self.preview_request_lock:
+            self.pending_preview_request = preview_request
+            self.preview_request_event.set()
+
+    def cancel_pending_preview_requests(self) -> None:
+        self.preview_request_id += 1
+        self.active_preview_request_id = self.preview_request_id
+        with self.preview_request_lock:
+            self.pending_preview_request = None
+            self.preview_request_event.clear()
+
+    def _preview_worker_loop(self) -> None:
+        while not self.preview_shutdown_event.is_set():
+            self.preview_request_event.wait(0.1)
+            if self.preview_shutdown_event.is_set():
+                return
+            if not self.preview_request_event.is_set():
+                continue
+
+            with self.preview_request_lock:
+                preview_request = self.pending_preview_request
+                self.pending_preview_request = None
+                self.preview_request_event.clear()
+
+            if preview_request is None:
+                continue
+
+            try:
+                figure = build_figure(
+                    preview_request.data,
+                    preview_request.selected_columns,
+                    width_px=preview_request.width_px,
+                    height_px=preview_request.height_px,
+                    dpi=preview_request.dpi,
+                    style=preview_request.style,
+                    max_points_per_series=preview_request.max_points_per_series,
+                )
+            except Exception as exc:
+                self.preview_results.put(
+                    PreviewRenderResult(
+                        request_id=preview_request.request_id,
+                        error_message=str(exc),
+                    )
+                )
+                continue
+
+            self.preview_results.put(
+                PreviewRenderResult(
+                    request_id=preview_request.request_id,
+                    figure=figure,
+                )
+            )
+
+    def process_preview_results(self) -> None:
+        try:
+            while True:
+                preview_result = self.preview_results.get_nowait()
+                if preview_result.request_id != self.active_preview_request_id:
+                    if preview_result.figure is not None:
+                        preview_result.figure.clear()
+                    continue
+
+                if preview_result.error_message is not None:
+                    self.status_var.set(f"自动预览未更新：{preview_result.error_message}")
+                    continue
+
+                if preview_result.figure is not None:
+                    self.show_figure(preview_result.figure)
+                    self.status_var.set("图表预览已在后台更新。")
+        except Empty:
+            pass
+        finally:
+            if not self.preview_shutdown_event.is_set():
+                self.after(80, self.process_preview_results)
+
+    def on_close(self) -> None:
+        self.preview_shutdown_event.set()
+        self.preview_request_event.set()
+        self.destroy()
 
     def get_preview_render_options(self, width_px: int, height_px: int, dpi: int) -> tuple[int, int, int]:
         available_width = self.preview_host.winfo_width() - 24

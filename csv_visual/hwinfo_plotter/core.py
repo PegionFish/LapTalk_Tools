@@ -88,10 +88,13 @@ class HWiNFOData:
     rows: list[list[str]]
     skipped_rows: int = 0
     _column_map: dict[int, SensorColumn] = field(default_factory=dict, init=False, repr=False)
+    _column_indices: tuple[int, ...] = field(default_factory=tuple, init=False, repr=False)
     _series_cache: dict[int, tuple[list[datetime], list[float]]] = field(default_factory=dict, init=False, repr=False)
+    _all_series_preloaded: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._column_map = {column.index: column for column in self.columns}
+        self._column_indices = tuple(column.index for column in self.columns)
 
     def column_for_index(self, column_index: int) -> SensorColumn:
         try:
@@ -122,8 +125,33 @@ class HWiNFOData:
         self._series_cache[column_index] = series
         return series
 
+    def preload_numeric_series(self) -> None:
+        if self._all_series_preloaded:
+            return
 
-def load_hwinfo_csv(path: Path | str) -> HWiNFOData:
+        x_series_map = {column_index: [] for column_index in self._column_indices}
+        y_series_map = {column_index: [] for column_index in self._column_indices}
+
+        for timestamp, row in zip(self.timestamps, self.rows):
+            for column_index in self._column_indices:
+                if column_index >= len(row):
+                    continue
+
+                numeric_value = parse_numeric_value(row[column_index])
+                if numeric_value is None:
+                    continue
+
+                x_series_map[column_index].append(timestamp)
+                y_series_map[column_index].append(numeric_value)
+
+        self._series_cache = {
+            column_index: (x_series_map[column_index], y_series_map[column_index])
+            for column_index in self._column_indices
+        }
+        self._all_series_preloaded = True
+
+
+def load_hwinfo_csv(path: Path | str, preload_numeric: bool = False) -> HWiNFOData:
     source_path = Path(path).expanduser().resolve()
     if not source_path.exists():
         raise FileNotFoundError(f"找不到 CSV 文件：{source_path}")
@@ -165,7 +193,7 @@ def load_hwinfo_csv(path: Path | str) -> HWiNFOData:
     if not timestamps:
         raise ValueError("CSV 中没有成功解析出任何时间戳数据。")
 
-    return HWiNFOData(
+    data = HWiNFOData(
         source_path=source_path,
         encoding=encoding_used,
         headers=headers,
@@ -174,6 +202,11 @@ def load_hwinfo_csv(path: Path | str) -> HWiNFOData:
         rows=rows,
         skipped_rows=skipped_rows,
     )
+
+    if preload_numeric:
+        data.preload_numeric_series()
+
+    return data
 
 
 def build_figure(

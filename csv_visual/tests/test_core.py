@@ -32,6 +32,12 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertGreater(len(self.data.columns), 100)
         self.assertEqual(self.data.source_path.name, "R23-15.CSV")
 
+    def test_loads_sample_csv_with_preloaded_series(self) -> None:
+        data = load_hwinfo_csv(SAMPLE_CSV, preload_numeric=True)
+
+        self.assertEqual(len(data._series_cache), len(data.columns))
+        self.assertTrue(data._all_series_preloaded)
+
     def test_exports_png(self) -> None:
         column_index = next(
             column.index
