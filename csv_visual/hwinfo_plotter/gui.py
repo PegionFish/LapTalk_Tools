@@ -313,7 +313,7 @@ class HWiNFOPlotterApp(tk.Tk):
             sticky="w",
             pady=(8, 0),
         )
-        ttk.Checkbutton(options_frame, text="显示图例", variable=self.show_legend_var).grid(
+        ttk.Checkbutton(options_frame, text="显示图例（关=仅线条）", variable=self.show_legend_var).grid(
             row=5,
             column=2,
             columnspan=2,

@@ -118,6 +118,7 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(axis.get_ylabel(), "")
         self.assertFalse(axis.xaxis.get_offset_text().get_visible())
         self.assertEqual(axis.lines[0].get_linewidth(), 2.4)
+        self.assertEqual(len(axis.lines), len(column_indices))
         self.assertIsNone(axis.get_legend())
 
     def test_compact_time_formatter_omits_zero_hour_component(self) -> None:
