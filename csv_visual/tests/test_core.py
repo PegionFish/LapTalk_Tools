@@ -208,6 +208,43 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertTrue(minute_diffs)
         self.assertLessEqual(min(minute_diffs), 2)
 
+    def test_time_axis_supports_fixed_interval(self) -> None:
+        base_time = datetime(2026, 4, 13, 12, 0, 0)
+        timestamps = [base_time + timedelta(minutes=index) for index in range(31)]
+        data = HWiNFOData(
+            source_path=Path("synthetic.csv"),
+            encoding="utf-8",
+            headers=["Date", "Time", "CPU"],
+            columns=[SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU")],
+            timestamps=timestamps,
+            rows=[
+                ["13/04/2026", f"12:{index:02d}:00", f"{float(index):.1f}"]
+                for index in range(31)
+            ],
+        )
+
+        figure = build_figure(
+            data,
+            [2],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            style=ChartStyle(
+                fixed_time_interval_seconds=120,
+            ),
+        )
+        axis = figure.axes[0]
+        locator = axis.xaxis.get_major_locator()
+        tick_values = locator.tick_values(timestamps[0], timestamps[-1])
+        tick_datetimes = mdates.num2date(tick_values)
+        minute_diffs = [
+            (tick_datetimes[index + 1] - tick_datetimes[index]).total_seconds() / 60
+            for index in range(len(tick_datetimes) - 1)
+        ]
+
+        self.assertTrue(minute_diffs)
+        self.assertTrue(all(abs(diff - 2) < 1e-6 for diff in minute_diffs))
+
 
 if __name__ == "__main__":
     unittest.main()

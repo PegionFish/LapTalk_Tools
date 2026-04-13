@@ -9,7 +9,17 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from .core import ChartStyle, HWiNFOData, build_default_output_name, build_figure, load_hwinfo_csv, save_figure
+from .core import (
+    ChartStyle,
+    DEFAULT_TIME_TICK_DENSITY,
+    HWiNFOData,
+    MAX_TIME_TICK_DENSITY,
+    MIN_TIME_TICK_DENSITY,
+    build_default_output_name,
+    build_figure,
+    load_hwinfo_csv,
+    save_figure,
+)
 
 
 LEGEND_LOCATION_CHOICES = {
@@ -23,6 +33,12 @@ LEGEND_LOCATION_CHOICES = {
 }
 PREVIEW_MIN_DPI = 24
 PREVIEW_PADDING = 24
+TIME_INTERVAL_UNIT_CHOICES = {
+    "自动": None,
+    "秒": 1,
+    "分钟": 60,
+    "小时": 3600,
+}
 
 
 @dataclass(frozen=True)
@@ -76,6 +92,10 @@ class HWiNFOPlotterApp(tk.Tk):
         self.height_var = tk.StringVar(value="1080")
         self.dpi_var = tk.StringVar(value="160")
         self.line_width_var = tk.StringVar(value="1.8")
+        self.time_density_var = tk.DoubleVar(value=DEFAULT_TIME_TICK_DENSITY)
+        self.time_density_label_var = tk.StringVar()
+        self.fixed_time_interval_var = tk.StringVar()
+        self.fixed_time_interval_unit_var = tk.StringVar(value="自动")
         self.show_grid_var = tk.BooleanVar(value=True)
         self.show_legend_var = tk.BooleanVar(value=True)
         self.legend_location_var = tk.StringVar(value="自动")
@@ -89,11 +109,15 @@ class HWiNFOPlotterApp(tk.Tk):
             self.height_var,
             self.dpi_var,
             self.line_width_var,
+            self.fixed_time_interval_var,
+            self.fixed_time_interval_unit_var,
             self.show_grid_var,
             self.show_legend_var,
             self.legend_location_var,
         ):
             option_var.trace_add("write", self._on_chart_option_changed)
+        self.time_density_var.trace_add("write", self._on_time_density_changed)
+        self.update_time_density_label()
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -178,22 +202,53 @@ class HWiNFOPlotterApp(tk.Tk):
         ttk.Label(options_frame, text="曲线线宽").grid(row=2, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
         ttk.Entry(options_frame, textvariable=self.line_width_var, width=10).grid(row=2, column=3, sticky="ew", pady=(8, 0))
 
+        ttk.Label(options_frame, text="时间刻度密度").grid(row=3, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        time_density_frame = ttk.Frame(options_frame)
+        time_density_frame.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        time_density_frame.columnconfigure(0, weight=1)
+
+        time_density_scale = tk.Scale(
+            time_density_frame,
+            from_=MIN_TIME_TICK_DENSITY,
+            to=MAX_TIME_TICK_DENSITY,
+            orient=tk.HORIZONTAL,
+            resolution=1,
+            showvalue=False,
+            variable=self.time_density_var,
+        )
+        time_density_scale.grid(row=0, column=0, sticky="ew")
+        ttk.Label(time_density_frame, textvariable=self.time_density_label_var).grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        ttk.Label(options_frame, text="固定时间间隔").grid(row=4, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        fixed_interval_frame = ttk.Frame(options_frame)
+        fixed_interval_frame.grid(row=4, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        fixed_interval_frame.columnconfigure(0, weight=1)
+
+        ttk.Entry(fixed_interval_frame, textvariable=self.fixed_time_interval_var).grid(row=0, column=0, sticky="ew")
+        ttk.Combobox(
+            fixed_interval_frame,
+            textvariable=self.fixed_time_interval_unit_var,
+            values=list(TIME_INTERVAL_UNIT_CHOICES.keys()),
+            state="readonly",
+            width=8,
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
         ttk.Checkbutton(options_frame, text="显示网格", variable=self.show_grid_var).grid(
-            row=3,
+            row=5,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
         ttk.Checkbutton(options_frame, text="显示图例", variable=self.show_legend_var).grid(
-            row=3,
+            row=5,
             column=2,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
 
-        ttk.Label(options_frame, text="图例位置").grid(row=4, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Label(options_frame, text="图例位置").grid(row=6, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         legend_location_box = ttk.Combobox(
             options_frame,
             textvariable=self.legend_location_var,
@@ -201,7 +256,7 @@ class HWiNFOPlotterApp(tk.Tk):
             state="readonly",
             width=10,
         )
-        legend_location_box.grid(row=4, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        legend_location_box.grid(row=6, column=1, columnspan=3, sticky="ew", pady=(8, 0))
 
         series_style_frame = ttk.Labelframe(control_panel, text="参数颜色", padding=12)
         series_style_frame.grid(row=6, column=0, sticky="nsew", pady=(12, 0))
@@ -313,6 +368,14 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _on_chart_option_changed(self, *_args) -> None:
         self.schedule_preview_refresh()
+
+    def _on_time_density_changed(self, *_args) -> None:
+        self.update_time_density_label()
+        self.schedule_preview_refresh()
+
+    def update_time_density_label(self) -> None:
+        density_value = self.parse_time_tick_density()
+        self.time_density_label_var.set(f"{density_value}")
 
     def _on_preview_host_configure(self, _event=None) -> None:
         self.update_preview_scroll_region()
@@ -510,6 +573,9 @@ class HWiNFOPlotterApp(tk.Tk):
         self.height_var.set("1080")
         self.dpi_var.set("160")
         self.line_width_var.set("1.8")
+        self.time_density_var.set(DEFAULT_TIME_TICK_DENSITY)
+        self.fixed_time_interval_var.set("")
+        self.fixed_time_interval_unit_var.set("自动")
         self.show_grid_var.set(True)
         self.show_legend_var.set(True)
         self.legend_location_var.set("自动")
@@ -629,6 +695,8 @@ class HWiNFOPlotterApp(tk.Tk):
             show_grid=self.show_grid_var.get(),
             show_legend=self.show_legend_var.get(),
             legend_location=LEGEND_LOCATION_CHOICES.get(self.legend_location_var.get(), "best"),
+            time_tick_density=self.parse_time_tick_density(),
+            fixed_time_interval_seconds=self.parse_fixed_time_interval_seconds(),
         )
         if preview:
             width_px, height_px, dpi = self.get_preview_render_options(width_px, height_px, dpi)
@@ -798,6 +866,31 @@ class HWiNFOPlotterApp(tk.Tk):
             raise ValueError(f"{field_name} 必须大于 0。")
 
         return parsed
+
+    def parse_time_tick_density(self) -> int:
+        density_value = int(round(float(self.time_density_var.get())))
+        if density_value < MIN_TIME_TICK_DENSITY:
+            density_value = MIN_TIME_TICK_DENSITY
+        if density_value > MAX_TIME_TICK_DENSITY:
+            density_value = MAX_TIME_TICK_DENSITY
+        return density_value
+
+    def parse_fixed_time_interval_seconds(self) -> int | None:
+        unit_text = self.fixed_time_interval_unit_var.get().strip() or "自动"
+        multiplier = TIME_INTERVAL_UNIT_CHOICES.get(unit_text)
+        interval_text = self.fixed_time_interval_var.get().strip()
+        if multiplier is None or not interval_text:
+            return None
+
+        try:
+            interval_value = int(interval_text)
+        except ValueError as exc:
+            raise ValueError("固定时间间隔必须是正整数。") from exc
+
+        if interval_value <= 0:
+            raise ValueError("固定时间间隔必须大于 0。")
+
+        return interval_value * multiplier
 
 
 def launch_app() -> None:

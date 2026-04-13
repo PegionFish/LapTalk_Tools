@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from dateutil.rrule import HOURLY, MINUTELY, SECONDLY
 from matplotlib import dates as mdates
 from matplotlib import font_manager, rcParams
 from matplotlib.figure import Figure
@@ -53,6 +54,9 @@ BOM_ENCODINGS = (
     (codecs.BOM_UTF16_LE, "utf-16"),
     (codecs.BOM_UTF16_BE, "utf-16"),
 )
+MIN_TIME_TICK_DENSITY = 1
+MAX_TIME_TICK_DENSITY = 12
+DEFAULT_TIME_TICK_DENSITY = 7
 
 _FONT_READY = False
 
@@ -73,6 +77,8 @@ class ChartStyle:
     grid_alpha: float = 0.28
     show_legend: bool = True
     legend_location: str = "best"
+    time_tick_density: int = DEFAULT_TIME_TICK_DENSITY
+    fixed_time_interval_seconds: int | None = None
 
 
 @dataclass
@@ -230,6 +236,12 @@ def build_figure(
         raise ValueError("网格透明度必须在 0 到 1 之间。")
     if chart_style.legend_location not in LEGEND_LOCATIONS:
         raise ValueError(f"不支持的图例位置：{chart_style.legend_location}")
+    if not MIN_TIME_TICK_DENSITY <= chart_style.time_tick_density <= MAX_TIME_TICK_DENSITY:
+        raise ValueError(
+            f"时间刻度密度必须在 {MIN_TIME_TICK_DENSITY} 到 {MAX_TIME_TICK_DENSITY} 之间。"
+        )
+    if chart_style.fixed_time_interval_seconds is not None and chart_style.fixed_time_interval_seconds <= 0:
+        raise ValueError("固定时间刻度间隔必须大于 0。")
 
     configure_matplotlib_fonts()
 
@@ -242,7 +254,7 @@ def build_figure(
     figure.patch.set_alpha(0.0)
     axis.set_facecolor("none")
 
-    configure_time_axis(axis, data.timestamps)
+    configure_time_axis(axis, data.timestamps, chart_style)
 
     plotted_line_count = 0
     for column_index in column_indices:
@@ -479,17 +491,21 @@ def resolve_chart_style(style: ChartStyle | None, title: str | None = None) -> C
     return style
 
 
-def configure_time_axis(axis, timestamps: Sequence[datetime]) -> None:
-    locator = build_time_locator(timestamps)
+def configure_time_axis(axis, timestamps: Sequence[datetime], chart_style: ChartStyle) -> None:
+    locator = build_time_locator(timestamps, chart_style)
     formatter = build_time_formatter(timestamps)
     axis.xaxis.set_major_locator(locator)
     axis.xaxis.set_major_formatter(formatter)
     axis.xaxis.get_offset_text().set_visible(False)
 
 
-def build_time_locator(timestamps: Sequence[datetime]):
-    locator = mdates.AutoDateLocator(minticks=12, maxticks=24, interval_multiples=True)
-    locator.intervald[mdates.MINUTELY] = [1, 2, 3, 5, 10, 15, 20, 30]
+def build_time_locator(timestamps: Sequence[datetime], chart_style: ChartStyle):
+    if chart_style.fixed_time_interval_seconds is not None:
+        return build_fixed_interval_locator(chart_style.fixed_time_interval_seconds)
+
+    minticks, maxticks = resolve_tick_density(chart_style.time_tick_density)
+    locator = mdates.AutoDateLocator(minticks=minticks, maxticks=maxticks, interval_multiples=True)
+    locator.intervald[mdates.MINUTELY] = [1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]
     locator.intervald[mdates.HOURLY] = [1, 2, 3, 4, 6, 8, 12]
     locator.intervald[mdates.SECONDLY] = [1, 2, 5, 10, 15, 20, 30]
     return locator
@@ -508,6 +524,22 @@ def build_time_formatter(timestamps: Sequence[datetime]):
     if total_seconds <= 7 * 24 * 60 * 60:
         return mdates.DateFormatter("%m-%d %H:%M")
     return mdates.DateFormatter("%Y-%m-%d %H:%M")
+
+
+def resolve_tick_density(time_tick_density: int) -> tuple[int, int]:
+    minticks = 4 + time_tick_density
+    maxticks = 8 + time_tick_density * 2
+    return minticks, maxticks
+
+
+def build_fixed_interval_locator(fixed_time_interval_seconds: int):
+    if fixed_time_interval_seconds % 3600 == 0:
+        rule = mdates.rrulewrapper(HOURLY, interval=fixed_time_interval_seconds // 3600)
+    elif fixed_time_interval_seconds % 60 == 0:
+        rule = mdates.rrulewrapper(MINUTELY, interval=fixed_time_interval_seconds // 60)
+    else:
+        rule = mdates.rrulewrapper(SECONDLY, interval=fixed_time_interval_seconds)
+    return mdates.RRuleLocator(rule)
 
 
 def configure_matplotlib_fonts() -> None:
