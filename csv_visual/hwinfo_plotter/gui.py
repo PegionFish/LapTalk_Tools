@@ -5,7 +5,7 @@ import ctypes
 import sys
 import threading
 import tkinter as tk
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,22 +44,25 @@ TIME_INTERVAL_UNIT_CHOICES = {
     "小时": 3600,
 }
 WINDOWS_DROP_MESSAGE = 0x0233
-WINDOWS_WINDOW_PROC_INDEX = -4
+WINDOWS_NC_DESTROY_MESSAGE = 0x0082
 WINDOWS_DRAG_QUERY_ALL_FILES = 0xFFFFFFFF
-WINDOWS_LONG_PTR = ctypes.c_ssize_t
 WINDOWS_LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
+WINDOWS_UINT_PTR = ctypes.c_size_t
+WINDOWS_DWORD_PTR = ctypes.c_size_t
 
 
 class WindowsFileDropManager:
-    def __init__(self, root: tk.Misc, on_drop: Callable[[tuple[str, ...]], None]) -> None:
+    def __init__(self, root: tk.Misc) -> None:
         self.root = root
-        self.on_drop = on_drop
-        self._user32 = None
+        self.dropped_file_paths: Queue[tuple[str, ...]] = Queue()
         self._shell32 = None
-        self._set_window_long_ptr = None
+        self._comctl32 = None
+        self._set_window_subclass = None
+        self._remove_window_subclass = None
+        self._def_subclass_proc = None
         self._window_proc_callback = None
-        self._window_proc_pointer: int | None = None
-        self._old_window_procs: dict[int, int] = {}
+        self._subclass_id = WINDOWS_UINT_PTR(id(self))
+        self._registered_window_handles: set[int] = set()
 
     def register(self) -> bool:
         if sys.platform != "win32":
@@ -74,49 +77,64 @@ class WindowsFileDropManager:
             self.unregister()
             return False
 
-        return bool(self._old_window_procs)
+        return bool(self._registered_window_handles)
 
     def unregister(self) -> None:
-        if self._user32 is None or self._shell32 is None or self._set_window_long_ptr is None:
+        if (
+            self._shell32 is None
+            or self._remove_window_subclass is None
+            or self._window_proc_callback is None
+        ):
             return
 
-        for window_handle, old_window_proc in list(self._old_window_procs.items()):
+        for window_handle in list(self._registered_window_handles):
             try:
                 self._shell32.DragAcceptFiles(wintypes.HWND(window_handle), False)
-                self._set_window_long_ptr(
+                self._remove_window_subclass(
                     wintypes.HWND(window_handle),
-                    WINDOWS_WINDOW_PROC_INDEX,
-                    old_window_proc,
+                    self._window_proc_callback,
+                    self._subclass_id,
                 )
             except (OSError, ctypes.ArgumentError):
                 pass
 
-        self._old_window_procs.clear()
+        self._registered_window_handles.clear()
+
+    def pop_dropped_paths(self) -> tuple[str, ...] | None:
+        try:
+            return self.dropped_file_paths.get_nowait()
+        except Empty:
+            return None
 
     def _load_win32_api(self) -> None:
-        if self._user32 is not None:
+        if self._shell32 is not None:
             return
 
-        self._user32 = ctypes.windll.user32
         self._shell32 = ctypes.windll.shell32
-        self._set_window_long_ptr = getattr(self._user32, "SetWindowLongPtrW", self._user32.SetWindowLongW)
-        self._set_window_long_ptr.argtypes = [wintypes.HWND, ctypes.c_int, WINDOWS_LONG_PTR]
-        self._set_window_long_ptr.restype = WINDOWS_LONG_PTR
-        self._user32.CallWindowProcW.argtypes = [
-            WINDOWS_LONG_PTR,
+        self._comctl32 = ctypes.windll.comctl32
+        self._set_window_subclass = self._comctl32.SetWindowSubclass
+        self._set_window_subclass.argtypes = [
+            wintypes.HWND,
+            ctypes.c_void_p,
+            WINDOWS_UINT_PTR,
+            WINDOWS_DWORD_PTR,
+        ]
+        self._set_window_subclass.restype = wintypes.BOOL
+        self._remove_window_subclass = self._comctl32.RemoveWindowSubclass
+        self._remove_window_subclass.argtypes = [
+            wintypes.HWND,
+            ctypes.c_void_p,
+            WINDOWS_UINT_PTR,
+        ]
+        self._remove_window_subclass.restype = wintypes.BOOL
+        self._def_subclass_proc = self._comctl32.DefSubclassProc
+        self._def_subclass_proc.argtypes = [
             wintypes.HWND,
             wintypes.UINT,
             wintypes.WPARAM,
             wintypes.LPARAM,
         ]
-        self._user32.CallWindowProcW.restype = WINDOWS_LRESULT
-        self._user32.DefWindowProcW.argtypes = [
-            wintypes.HWND,
-            wintypes.UINT,
-            wintypes.WPARAM,
-            wintypes.LPARAM,
-        ]
-        self._user32.DefWindowProcW.restype = WINDOWS_LRESULT
+        self._def_subclass_proc.restype = WINDOWS_LRESULT
         self._shell32.DragAcceptFiles.argtypes = [wintypes.HWND, wintypes.BOOL]
         self._shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
         self._shell32.DragQueryFileW.restype = wintypes.UINT
@@ -129,43 +147,45 @@ class WindowsFileDropManager:
             wintypes.UINT,
             wintypes.WPARAM,
             wintypes.LPARAM,
+            WINDOWS_UINT_PTR,
+            WINDOWS_DWORD_PTR,
         )
         self._window_proc_callback = window_proc_factory(self._window_proc)
-        self._window_proc_pointer = ctypes.cast(self._window_proc_callback, ctypes.c_void_p).value
 
     def _register_widget(self, widget: tk.Misc) -> None:
-        if self._shell32 is None or self._set_window_long_ptr is None or self._window_proc_pointer is None:
+        if self._shell32 is None or self._set_window_subclass is None or self._window_proc_callback is None:
             return
 
         window_handle = int(widget.winfo_id())
-        if window_handle in self._old_window_procs:
+        if window_handle in self._registered_window_handles:
             return
 
-        old_window_proc = self._set_window_long_ptr(
+        is_registered = self._set_window_subclass(
             wintypes.HWND(window_handle),
-            WINDOWS_WINDOW_PROC_INDEX,
-            self._window_proc_pointer,
+            self._window_proc_callback,
+            self._subclass_id,
+            0,
         )
-        if not old_window_proc:
+        if not is_registered:
             return
 
-        self._old_window_procs[window_handle] = int(old_window_proc)
+        self._registered_window_handles.add(window_handle)
         self._shell32.DragAcceptFiles(wintypes.HWND(window_handle), True)
 
-    def _window_proc(self, window_handle, message, w_param, l_param):
+    def _window_proc(self, window_handle, message, w_param, l_param, _subclass_id, _ref_data):
         if message == WINDOWS_DROP_MESSAGE:
             dropped_paths = self._extract_dropped_paths(w_param)
-            self.root.after(0, lambda paths=dropped_paths: self.on_drop(paths))
+            self.dropped_file_paths.put(dropped_paths)
             return 0
 
-        if self._user32 is None:
+        if self._def_subclass_proc is None:
             return 0
 
-        old_window_proc = self._old_window_procs.get(int(window_handle))
-        if old_window_proc:
-            return self._user32.CallWindowProcW(old_window_proc, window_handle, message, w_param, l_param)
+        result = self._def_subclass_proc(window_handle, message, w_param, l_param)
+        if message == WINDOWS_NC_DESTROY_MESSAGE:
+            self._registered_window_handles.discard(int(window_handle))
 
-        return self._user32.DefWindowProcW(window_handle, message, w_param, l_param)
+        return result
 
     def _extract_dropped_paths(self, drop_handle) -> tuple[str, ...]:
         if self._shell32 is None:
@@ -257,6 +277,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_display_size: tuple[int, int] | None = None
         self.preview_after_id: str | None = None
         self.preview_display_after_id: str | None = None
+        self.file_drop_after_id: str | None = None
         self.preview_request_id = 0
         self.active_preview_request_id = 0
         self.pending_preview_request: PreviewRenderRequest | None = None
@@ -896,9 +917,30 @@ class HWiNFOPlotterApp(tk.Tk):
         self.load_current_file()
 
     def enable_file_drop(self) -> None:
-        file_drop_manager = WindowsFileDropManager(self, self.handle_dropped_files)
+        file_drop_manager = WindowsFileDropManager(self)
         if file_drop_manager.register():
             self.file_drop_manager = file_drop_manager
+            self.schedule_file_drop_processing()
+
+    def schedule_file_drop_processing(self) -> None:
+        if self.file_drop_after_id is not None:
+            return
+
+        self.file_drop_after_id = self.after(100, self.process_dropped_files)
+
+    def process_dropped_files(self) -> None:
+        self.file_drop_after_id = None
+        if self.file_drop_manager is None:
+            return
+
+        while True:
+            file_paths = self.file_drop_manager.pop_dropped_paths()
+            if file_paths is None:
+                break
+            self.handle_dropped_files(file_paths)
+
+        if not self.preview_shutdown_event.is_set() and self.file_drop_manager is not None:
+            self.schedule_file_drop_processing()
 
     def handle_dropped_files(self, file_paths: Sequence[str]) -> None:
         csv_path = self.pick_csv_drop_path(file_paths)
@@ -1424,6 +1466,12 @@ class HWiNFOPlotterApp(tk.Tk):
                 self.after(80, self.process_preview_results)
 
     def on_close(self) -> None:
+        if self.file_drop_after_id is not None:
+            try:
+                self.after_cancel(self.file_drop_after_id)
+            except tk.TclError:
+                pass
+            self.file_drop_after_id = None
         if self.file_drop_manager is not None:
             self.file_drop_manager.unregister()
             self.file_drop_manager = None

@@ -296,6 +296,33 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_process_dropped_files_dispatches_queued_paths(self) -> None:
+        class FakeDropManager:
+            def __init__(self) -> None:
+                self.queued_paths = [(r"C:\logs\R23-15.CSV",), None]
+
+            def pop_dropped_paths(self):
+                return self.queued_paths.pop(0)
+
+            def unregister(self) -> None:
+                return None
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.file_drop_manager = FakeDropManager()
+
+            with patch.object(app, "handle_dropped_files") as mock_handle, patch.object(
+                app,
+                "schedule_file_drop_processing",
+            ) as mock_schedule:
+                app.process_dropped_files()
+
+            mock_handle.assert_called_once_with((r"C:\logs\R23-15.CSV",))
+            mock_schedule.assert_called_once_with()
+        finally:
+            app.on_close()
+
     def test_handle_dropped_files_reports_missing_csv(self) -> None:
         app = HWiNFOPlotterApp()
         try:
