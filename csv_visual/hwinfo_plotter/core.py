@@ -11,8 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from matplotlib.colors import is_color_like
 from matplotlib import font_manager, rcParams
+from matplotlib.colors import is_color_like
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, MultipleLocator
 
@@ -87,6 +87,8 @@ class ChartStyle:
     legend_location: str = "best"
     time_tick_density: int = DEFAULT_TIME_TICK_DENSITY
     fixed_time_interval_seconds: int | None = None
+    legend_text_color: str | None = None
+    font_family: str | None = None
 
 
 @dataclass
@@ -327,11 +329,30 @@ def build_figure(
     else:
         axis.grid(False)
 
+    font_family = normalize_font_family(chart_style.font_family)
+
     if chart_style.title and not chart_style.curve_only_mode:
-        axis.set_title(chart_style.title)
+        title_kwargs: dict[str, object] = {}
+        if font_family:
+            title_kwargs["fontfamily"] = font_family
+        axis.set_title(chart_style.title, **title_kwargs)
 
     if chart_style.show_legend and plotted_line_count > 1 and not chart_style.curve_only_mode:
-        axis.legend(frameon=False, fontsize=9, loc=chart_style.legend_location)
+        legend_kwargs: dict[str, object] = {
+            "frameon": False,
+            "loc": chart_style.legend_location,
+        }
+        if font_family:
+            legend_kwargs["prop"] = {
+                "family": font_family,
+                "size": 9,
+            }
+        else:
+            legend_kwargs["fontsize"] = 9
+        legend = axis.legend(**legend_kwargs)
+        if chart_style.legend_text_color:
+            for legend_text in legend.get_texts():
+                legend_text.set_color(chart_style.legend_text_color)
 
     configure_axis_visibility(axis, chart_style)
 
@@ -556,10 +577,19 @@ def validate_chart_style_colors(chart_style: ChartStyle) -> None:
         ("网格颜色", chart_style.grid_color),
         ("时间文字颜色", chart_style.time_text_color),
         ("数值文字颜色", chart_style.value_text_color),
+        ("图例文字颜色", chart_style.legend_text_color),
     )
     for field_name, color_text in color_fields:
         if color_text is not None and not is_color_like(color_text):
             raise ValueError(f"{field_name}无效：{color_text}")
+
+
+def normalize_font_family(font_family: str | None) -> str | None:
+    if font_family is None:
+        return None
+
+    normalized_font_family = font_family.strip()
+    return normalized_font_family or None
 
 
 def resolve_visible_range_seconds(
@@ -640,8 +670,21 @@ def configure_axis_visibility(axis, chart_style: ChartStyle) -> None:
 
     axis.tick_params(**x_tick_kwargs)
     axis.tick_params(**y_tick_kwargs)
+    apply_axis_font_family(axis, chart_style)
     axis.xaxis.get_offset_text().set_visible(False)
     axis.yaxis.get_offset_text().set_visible(False)
+
+
+def apply_axis_font_family(axis, chart_style: ChartStyle) -> None:
+    font_family = normalize_font_family(chart_style.font_family)
+    if not font_family:
+        return
+
+    axis.title.set_fontfamily(font_family)
+    axis.xaxis.get_offset_text().set_fontfamily(font_family)
+    axis.yaxis.get_offset_text().set_fontfamily(font_family)
+    for tick_label in [*axis.get_xticklabels(), *axis.get_yticklabels()]:
+        tick_label.set_fontfamily(font_family)
 
 
 def configure_curve_only_mode(axis) -> None:

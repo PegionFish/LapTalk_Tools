@@ -328,6 +328,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self.grid_color_var = tk.StringVar()
         self.time_text_color_var = tk.StringVar()
         self.value_text_color_var = tk.StringVar()
+        self.legend_text_color_var = tk.StringVar()
+        self.font_family_var = tk.StringVar()
 
         self.filter_var.trace_add("write", self._on_filter_changed)
         for option_var in (
@@ -343,6 +345,8 @@ class HWiNFOPlotterApp(tk.Tk):
             self.grid_color_var,
             self.time_text_color_var,
             self.value_text_color_var,
+            self.legend_text_color_var,
+            self.font_family_var,
         ):
             option_var.trace_add("write", self._on_chart_option_changed)
         for option_var in (
@@ -572,8 +576,24 @@ class HWiNFOPlotterApp(tk.Tk):
             pady=(8, 0),
         )
 
-        ttk.Label(options_frame, text="颜色可输入 66CCFF 或 #66CCFF，留空使用默认。").grid(
+        ttk.Label(options_frame, text="图例文字颜色").grid(row=11, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.legend_text_color_var, width=10).grid(
             row=11,
+            column=1,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="字体名称").grid(row=11, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.font_family_var, width=10).grid(
+            row=11,
+            column=3,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="颜色可输入 66CCFF 或 #66CCFF；字体留空自动选择，示例：Microsoft YaHei。").grid(
+            row=12,
             column=0,
             columnspan=4,
             sticky="w",
@@ -1161,6 +1181,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self.grid_color_var.set("")
         self.time_text_color_var.set("")
         self.value_text_color_var.set("")
+        self.legend_text_color_var.set("")
+        self.font_family_var.set("")
         self.status_var.set("图表样式已重置。")
         self.schedule_preview_refresh()
 
@@ -1291,6 +1313,7 @@ class HWiNFOPlotterApp(tk.Tk):
         line_width = self.parse_positive_float(self.line_width_var.get(), "曲线线宽")
         style = ChartStyle(
             title=self.title_var.get().strip() or None,
+            font_family=self.parse_optional_text(self.font_family_var.get()),
             line_width=line_width,
             curve_only_mode=self.curve_only_mode_var.get(),
             show_grid=self.show_grid_var.get(),
@@ -1301,6 +1324,7 @@ class HWiNFOPlotterApp(tk.Tk):
             grid_color=self.parse_optional_hex_color(self.grid_color_var.get(), "网格颜色"),
             time_text_color=self.parse_optional_hex_color(self.time_text_color_var.get(), "时间文字颜色"),
             value_text_color=self.parse_optional_hex_color(self.value_text_color_var.get(), "数值文字颜色"),
+            legend_text_color=self.parse_optional_hex_color(self.legend_text_color_var.get(), "图例文字颜色"),
             legend_location=LEGEND_LOCATION_CHOICES.get(self.legend_location_var.get(), "best"),
             time_tick_density=self.parse_time_tick_density(),
             fixed_time_interval_seconds=self.parse_fixed_time_interval_seconds(),
@@ -1639,6 +1663,11 @@ class HWiNFOPlotterApp(tk.Tk):
             return cls.normalize_hex_color(value)
         except ValueError as exc:
             raise ValueError(f"{field_name}格式无效：{exc}") from exc
+
+    @staticmethod
+    def parse_optional_text(value: str) -> str | None:
+        text = value.strip()
+        return text or None
 
     def parse_time_tick_density(self) -> int:
         density_value = int(round(float(self.time_density_var.get())))

@@ -283,6 +283,36 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(axis.get_xgridlines()[0].get_color(), "#223344")
         self.assertEqual(axis.get_ygridlines()[0].get_color(), "#223344")
 
+    def test_build_figure_applies_legend_text_color_and_font_family(self) -> None:
+        column_indices = [
+            column.index
+            for column in self.data.columns
+            if len(self.data.extract_series(column.index)[1]) > 10
+        ][:2]
+
+        figure = build_figure(
+            self.data,
+            column_indices,
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            style=ChartStyle(
+                title="字体测试",
+                font_family="DejaVu Sans",
+                legend_text_color="#abcdef",
+            ),
+        )
+        axis = figure.axes[0]
+        legend = axis.get_legend()
+
+        self.assertIsNotNone(legend)
+        self.assertEqual(axis.title.get_fontfamily(), ["DejaVu Sans"])
+        self.assertEqual(axis.xaxis.get_major_ticks()[0].label1.get_fontfamily(), ["DejaVu Sans"])
+        self.assertTrue(legend.get_texts())
+        for legend_text in legend.get_texts():
+            self.assertEqual(legend_text.get_color(), "#abcdef")
+            self.assertEqual(legend_text.get_fontfamily(), ["DejaVu Sans"])
+
     def test_time_axis_uses_denser_ticks(self) -> None:
         base_time = datetime(2026, 4, 13, 12, 0, 0)
         timestamps = [base_time + timedelta(minutes=index) for index in range(31)]

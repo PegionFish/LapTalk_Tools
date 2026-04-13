@@ -44,6 +44,10 @@ class GuiBehaviorTests(unittest.TestCase):
         self.assertIsNone(HWiNFOPlotterApp.parse_optional_hex_color("", "网格颜色"))
         self.assertEqual(HWiNFOPlotterApp.parse_optional_hex_color("66CCFF", "网格颜色"), "#66ccff")
 
+    def test_parse_optional_text_strips_blank_values(self) -> None:
+        self.assertIsNone(HWiNFOPlotterApp.parse_optional_text("   "))
+        self.assertEqual(HWiNFOPlotterApp.parse_optional_text("  Microsoft YaHei  "), "Microsoft YaHei")
+
     def test_pick_csv_drop_path_uses_first_csv_file(self) -> None:
         self.assertEqual(
             HWiNFOPlotterApp.pick_csv_drop_path(
@@ -132,6 +136,8 @@ class GuiBehaviorTests(unittest.TestCase):
             app.grid_color_var.set("222222")
             app.time_text_color_var.set("333333")
             app.value_text_color_var.set("444444")
+            app.legend_text_color_var.set("555555")
+            app.font_family_var.set("  Microsoft YaHei  ")
 
             preview_request = app.build_preview_request()
 
@@ -148,6 +154,8 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.style.grid_color, "#222222")
             self.assertEqual(preview_request.style.time_text_color, "#333333")
             self.assertEqual(preview_request.style.value_text_color, "#444444")
+            self.assertEqual(preview_request.style.legend_text_color, "#555555")
+            self.assertEqual(preview_request.style.font_family, "Microsoft YaHei")
             self.assertEqual(preview_request.visible_range_seconds, (1.0, 2.0))
         finally:
             app.on_close()
