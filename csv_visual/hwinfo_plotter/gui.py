@@ -402,37 +402,13 @@ class HWiNFOPlotterApp(tk.Tk):
         preview_frame = ttk.Labelframe(preview_panel, text="图表预览", padding=8)
         preview_frame.grid(row=0, column=0, sticky="nsew")
         preview_frame.columnconfigure(0, weight=1)
-        preview_frame.columnconfigure(1, weight=0)
         preview_frame.rowconfigure(0, weight=1)
-        preview_frame.rowconfigure(1, weight=0)
 
-        self.preview_scroll_canvas = tk.Canvas(preview_frame, highlightthickness=0, borderwidth=0)
-        self.preview_scroll_canvas.grid(row=0, column=0, sticky="nsew")
-
-        preview_y_scrollbar = ttk.Scrollbar(
-            preview_frame,
-            orient=tk.VERTICAL,
-            command=self.preview_scroll_canvas.yview,
-        )
-        preview_y_scrollbar.grid(row=0, column=1, sticky="ns")
-
-        preview_x_scrollbar = ttk.Scrollbar(
-            preview_frame,
-            orient=tk.HORIZONTAL,
-            command=self.preview_scroll_canvas.xview,
-        )
-        preview_x_scrollbar.grid(row=1, column=0, sticky="ew")
-
-        self.preview_scroll_canvas.configure(
-            xscrollcommand=preview_x_scrollbar.set,
-            yscrollcommand=preview_y_scrollbar.set,
-        )
-        self.preview_scroll_canvas.bind("<Configure>", self._on_preview_canvas_configure)
-
-        self.preview_host = ttk.Frame(self.preview_scroll_canvas)
+        self.preview_host = ttk.Frame(preview_frame)
+        self.preview_host.grid(row=0, column=0, sticky="nsew")
         self.preview_host.columnconfigure(0, weight=1)
         self.preview_host.rowconfigure(0, weight=1)
-        self.preview_window_id = self.preview_scroll_canvas.create_window((0, 0), window=self.preview_host, anchor="nw")
+        self.preview_host.grid_propagate(False)
         self.preview_host.bind("<Configure>", self._on_preview_host_configure)
 
         self.preview_placeholder = ttk.Label(
@@ -496,9 +472,6 @@ class HWiNFOPlotterApp(tk.Tk):
             return None if horizontal else self.column_listbox.yview_scroll
         if widget is self.selected_series_listbox:
             return None if horizontal else self.selected_series_listbox.yview_scroll
-
-        if self._widget_is_descendant_of(widget, self.preview_host) or widget is self.preview_scroll_canvas:
-            return self.preview_scroll_canvas.xview_scroll if horizontal else self.preview_scroll_canvas.yview_scroll
 
         if self._widget_is_descendant_of(widget, self.control_panel) or widget is self.control_scroll_canvas:
             return None if horizontal else self.control_scroll_canvas.yview_scroll
@@ -598,9 +571,6 @@ class HWiNFOPlotterApp(tk.Tk):
             start_seconds, end_seconds = end_seconds, start_seconds
         return start_seconds, end_seconds
 
-    def _on_preview_host_configure(self, _event=None) -> None:
-        self.update_preview_scroll_region()
-
     def _on_control_host_configure(self, _event=None) -> None:
         scroll_region = self.control_scroll_canvas.bbox("all")
         if scroll_region is None:
@@ -612,7 +582,7 @@ class HWiNFOPlotterApp(tk.Tk):
             return
         self.control_scroll_canvas.itemconfigure(self.control_window_id, width=event.width)
 
-    def _on_preview_canvas_configure(self, event=None) -> None:
+    def _on_preview_host_configure(self, event=None) -> None:
         if event is None:
             return
 
@@ -623,12 +593,6 @@ class HWiNFOPlotterApp(tk.Tk):
         self.last_preview_view_size = current_size
         if self.data and self.get_selected_columns():
             self.schedule_preview_refresh()
-
-    def update_preview_scroll_region(self) -> None:
-        scroll_region = self.preview_scroll_canvas.bbox("all")
-        if scroll_region is None:
-            scroll_region = (0, 0, 0, 0)
-        self.preview_scroll_canvas.configure(scrollregion=scroll_region)
 
     def browse_csv(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -966,8 +930,8 @@ class HWiNFOPlotterApp(tk.Tk):
         return selected_columns, width_px, height_px, dpi, style, color_by_column, visible_range_seconds
 
     def get_preview_render_options(self, width_px: int, height_px: int, dpi: int) -> tuple[int, int, int]:
-        available_width = max(1, self.preview_scroll_canvas.winfo_width() - PREVIEW_PADDING)
-        available_height = max(1, self.preview_scroll_canvas.winfo_height() - PREVIEW_PADDING)
+        available_width = max(1, self.preview_host.winfo_width() - PREVIEW_PADDING)
+        available_height = max(1, self.preview_host.winfo_height() - PREVIEW_PADDING)
 
         if available_width <= 1 or available_height <= 1:
             return width_px, height_px, dpi
@@ -1157,8 +1121,6 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.preview_canvas = canvas
         self.preview_figure = figure
-        self.preview_host.update_idletasks()
-        self.update_preview_scroll_region()
 
     def clear_preview(self) -> None:
         if self.preview_canvas is not None:
@@ -1170,8 +1132,6 @@ class HWiNFOPlotterApp(tk.Tk):
             self.preview_figure.clear()
         self.preview_figure = None
         self.preview_placeholder.grid(row=0, column=0, sticky="nsew")
-        self.preview_host.update_idletasks()
-        self.update_preview_scroll_region()
 
     @staticmethod
     def parse_positive_int(value: str, field_name: str) -> int:

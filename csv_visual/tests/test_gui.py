@@ -66,6 +66,17 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_mousewheel_does_not_scroll_preview_area(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            event = SimpleNamespace(widget=app.preview_host, delta=-120, num=None, state=0)
+
+            result = app._on_mousewheel(event)
+
+            self.assertIsNone(result)
+        finally:
+            app.on_close()
+
     def test_preview_request_scales_to_window_and_keeps_colors(self) -> None:
         data = build_synthetic_data()
 
@@ -86,8 +97,8 @@ class GuiBehaviorTests(unittest.TestCase):
             app.trim_start_var.set(1)
             app.trim_end_var.set(2)
 
-            with patch.object(app.preview_scroll_canvas, "winfo_width", return_value=824), patch.object(
-                app.preview_scroll_canvas,
+            with patch.object(app.preview_host, "winfo_width", return_value=824), patch.object(
+                app.preview_host,
                 "winfo_height",
                 return_value=624,
             ):
