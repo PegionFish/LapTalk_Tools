@@ -222,8 +222,8 @@ def build_figure(
         raise ValueError("至少需要选择一个参数。")
     if width_px < 200 or height_px < 200:
         raise ValueError("输出尺寸过小，请至少使用 200 x 200。")
-    if dpi < 72:
-        raise ValueError("DPI 不能小于 72。")
+    if dpi < 24:
+        raise ValueError("DPI 不能小于 24。")
 
     chart_style = resolve_chart_style(style, title=title)
     if chart_style.line_width <= 0:

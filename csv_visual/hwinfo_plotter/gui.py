@@ -21,6 +21,8 @@ LEGEND_LOCATION_CHOICES = {
     "上方居中": "upper center",
     "下方居中": "lower center",
 }
+PREVIEW_MIN_DPI = 24
+PREVIEW_PADDING = 24
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_after_id: str | None = None
         self.preview_request_id = 0
         self.active_preview_request_id = 0
+        self.last_preview_view_size: tuple[int, int] | None = None
         self.pending_preview_request: PreviewRenderRequest | None = None
         self.preview_results: Queue[PreviewRenderResult] = Queue()
         self.preview_request_lock = threading.Lock()
@@ -289,6 +292,7 @@ class HWiNFOPlotterApp(tk.Tk):
             xscrollcommand=preview_x_scrollbar.set,
             yscrollcommand=preview_y_scrollbar.set,
         )
+        self.preview_scroll_canvas.bind("<Configure>", self._on_preview_canvas_configure)
 
         self.preview_host = ttk.Frame(self.preview_scroll_canvas)
         self.preview_host.columnconfigure(0, weight=1)
@@ -322,6 +326,18 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _on_preview_host_configure(self, _event=None) -> None:
         self.update_preview_scroll_region()
+
+    def _on_preview_canvas_configure(self, event=None) -> None:
+        if event is None:
+            return
+
+        current_size = (event.width, event.height)
+        if current_size == self.last_preview_view_size:
+            return
+
+        self.last_preview_view_size = current_size
+        if self.data and self.get_selected_columns():
+            self.schedule_preview_refresh()
 
     def update_preview_scroll_region(self) -> None:
         scroll_region = self.preview_scroll_canvas.bbox("all")
@@ -628,7 +644,8 @@ class HWiNFOPlotterApp(tk.Tk):
             show_legend=self.show_legend_var.get(),
             legend_location=LEGEND_LOCATION_CHOICES.get(self.legend_location_var.get(), "best"),
         )
-        _ = preview
+        if preview:
+            width_px, height_px, dpi = self.get_preview_render_options(width_px, height_px, dpi)
         color_by_column = {
             column_index: color_text
             for column_index, color_text in self.column_colors.items()
@@ -636,6 +653,27 @@ class HWiNFOPlotterApp(tk.Tk):
         }
 
         return selected_columns, width_px, height_px, dpi, style, color_by_column
+
+    def get_preview_render_options(self, width_px: int, height_px: int, dpi: int) -> tuple[int, int, int]:
+        available_width = max(1, self.preview_scroll_canvas.winfo_width() - PREVIEW_PADDING)
+        available_height = max(1, self.preview_scroll_canvas.winfo_height() - PREVIEW_PADDING)
+
+        if available_width <= 1 or available_height <= 1:
+            return width_px, height_px, dpi
+
+        scale = min(
+            1.0,
+            available_width / width_px,
+            available_height / height_px,
+        )
+        if scale >= 1.0:
+            return width_px, height_px, dpi
+
+        preview_dpi = max(PREVIEW_MIN_DPI, int(round(dpi * scale)))
+        effective_scale = preview_dpi / dpi
+        preview_width = max(200, int(round(width_px * effective_scale)))
+        preview_height = max(200, int(round(height_px * effective_scale)))
+        return preview_width, preview_height, preview_dpi
 
     def enqueue_preview_request(self, preview_request: PreviewRenderRequest) -> None:
         with self.preview_request_lock:

@@ -3,13 +3,14 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from hwinfo_plotter.core import HWiNFOData, SensorColumn
 from hwinfo_plotter.gui import HWiNFOPlotterApp
 
 
 class GuiBehaviorTests(unittest.TestCase):
-    def test_preview_request_uses_configured_size_and_colors(self) -> None:
+    def test_preview_request_scales_to_window_and_keeps_colors(self) -> None:
         base_time = datetime(2026, 4, 13, 12, 0, 0)
         data = HWiNFOData(
             source_path=Path("synthetic.csv"),
@@ -35,11 +36,16 @@ class GuiBehaviorTests(unittest.TestCase):
             app.dpi_var.set("144")
             app.title_var.set("预览测试")
 
-            preview_request = app.build_preview_request()
+            with patch.object(app.preview_scroll_canvas, "winfo_width", return_value=824), patch.object(
+                app.preview_scroll_canvas,
+                "winfo_height",
+                return_value=624,
+            ):
+                preview_request = app.build_preview_request()
 
-            self.assertEqual(preview_request.width_px, 1600)
-            self.assertEqual(preview_request.height_px, 900)
-            self.assertEqual(preview_request.dpi, 144)
+            self.assertEqual(preview_request.width_px, 800)
+            self.assertEqual(preview_request.height_px, 450)
+            self.assertEqual(preview_request.dpi, 72)
             self.assertEqual(preview_request.color_by_column, {2: "#123456"})
             self.assertEqual(preview_request.style.title, "预览测试")
         finally:
