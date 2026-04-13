@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hwinfo_plotter.core import HWiNFOData, SensorColumn
-from hwinfo_plotter.gui import HWiNFOPlotterApp, PreloadSeriesResult
+from hwinfo_plotter.gui import HWiNFOPlotterApp, PreloadSeriesResult, fit_size_within_bounds
 
 
 TEST_PREVIEW_PNG_BYTES = base64.b64decode(
@@ -36,6 +36,10 @@ def build_synthetic_data() -> HWiNFOData:
 
 
 class GuiBehaviorTests(unittest.TestCase):
+    def test_fit_size_within_bounds_preserves_aspect_ratio(self) -> None:
+        self.assertEqual(fit_size_within_bounds(1600, 900, 800, 800), (800, 450))
+        self.assertEqual(fit_size_within_bounds(900, 1600, 800, 800), (450, 800))
+
     def test_filter_list_has_usable_height_without_fullscreen(self) -> None:
         app = HWiNFOPlotterApp()
         try:
@@ -120,9 +124,13 @@ class GuiBehaviorTests(unittest.TestCase):
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
-
-            app.show_preview_image(TEST_PREVIEW_PNG_BYTES)
-            app.update_idletasks()
+            with patch.object(app.preview_host, "winfo_width", return_value=200), patch.object(
+                app.preview_host,
+                "winfo_height",
+                return_value=100,
+            ):
+                app.show_preview_image(TEST_PREVIEW_PNG_BYTES)
+                app.update_idletasks()
 
             self.assertIsNotNone(app.preview_image)
             self.assertIsNotNone(app.preview_label)
@@ -131,6 +139,8 @@ class GuiBehaviorTests(unittest.TestCase):
             if isinstance(image_value, tuple):
                 image_value = image_value[0]
             self.assertEqual(image_value, str(app.preview_image))
+            self.assertEqual(app.preview_image.width(), 100)
+            self.assertEqual(app.preview_image.height(), 100)
             self.assertFalse(app.preview_placeholder.winfo_ismapped())
         finally:
             app.on_close()

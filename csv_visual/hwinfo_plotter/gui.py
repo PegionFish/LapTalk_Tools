@@ -21,6 +21,7 @@ from .core import (
     render_figure_png_bytes,
     save_figure,
 )
+from .win32_image import get_png_dimensions, resize_png_bytes
 
 
 LEGEND_LOCATION_CHOICES = {
@@ -38,6 +39,23 @@ TIME_INTERVAL_UNIT_CHOICES = {
     "分钟": 60,
     "小时": 3600,
 }
+
+
+def fit_size_within_bounds(
+    image_width: int,
+    image_height: int,
+    bounds_width: int,
+    bounds_height: int,
+) -> tuple[int, int]:
+    if image_width <= 0 or image_height <= 0:
+        raise ValueError("原图尺寸必须大于 0。")
+    if bounds_width <= 0 or bounds_height <= 0:
+        raise ValueError("预览区域尺寸必须大于 0。")
+
+    scale = min(bounds_width / image_width, bounds_height / image_height)
+    target_width = max(1, int(image_width * scale))
+    target_height = max(1, int(image_height * scale))
+    return target_width, target_height
 
 
 @dataclass(frozen=True)
@@ -86,7 +104,11 @@ class HWiNFOPlotterApp(tk.Tk):
         self.column_colors: dict[int, str] = {}
         self.preview_label: ttk.Label | None = None
         self.preview_image: tk.PhotoImage | None = None
+        self.preview_source_png_bytes: bytes | None = None
+        self.preview_source_size: tuple[int, int] | None = None
+        self.preview_display_size: tuple[int, int] | None = None
         self.preview_after_id: str | None = None
+        self.preview_display_after_id: str | None = None
         self.preview_request_id = 0
         self.active_preview_request_id = 0
         self.pending_preview_request: PreviewRenderRequest | None = None
@@ -406,6 +428,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_host.columnconfigure(0, weight=1)
         self.preview_host.rowconfigure(0, weight=1)
         self.preview_host.grid_propagate(False)
+        self.preview_host.bind("<Configure>", self._on_preview_host_configure)
 
         self.preview_placeholder = ttk.Label(
             self.preview_host,
@@ -577,6 +600,11 @@ class HWiNFOPlotterApp(tk.Tk):
         if event is None:
             return
         self.control_scroll_canvas.itemconfigure(self.control_window_id, width=event.width)
+
+    def _on_preview_host_configure(self, _event=None) -> None:
+        if self.preview_source_png_bytes is None:
+            return
+        self.schedule_preview_display_refresh()
 
     def browse_csv(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -1066,6 +1094,18 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_shutdown_event.set()
         self.preview_request_event.set()
         self.preload_request_event.set()
+        if self.preview_after_id is not None:
+            try:
+                self.after_cancel(self.preview_after_id)
+            except tk.TclError:
+                pass
+            self.preview_after_id = None
+        if self.preview_display_after_id is not None:
+            try:
+                self.after_cancel(self.preview_display_after_id)
+            except tk.TclError:
+                pass
+            self.preview_display_after_id = None
         self.destroy()
 
     def get_selected_columns(self) -> list[int]:
@@ -1079,23 +1119,90 @@ class HWiNFOPlotterApp(tk.Tk):
         self.clear_preview()
 
         self.preview_placeholder.grid_remove()
-        self.preview_image = tk.PhotoImage(
-            data=base64.b64encode(png_bytes).decode("ascii"),
-            format="png",
-        )
+        self.preview_source_png_bytes = png_bytes
+        self.preview_source_size = get_png_dimensions(png_bytes)
+        self.preview_display_size = None
         self.preview_label = ttk.Label(
             self.preview_host,
-            image=self.preview_image,
             anchor="center",
         )
         self.preview_label.grid(row=0, column=0, sticky="nsew")
+        self.refresh_preview_display()
+
+    def schedule_preview_display_refresh(self, *, immediate: bool = False) -> None:
+        if self.preview_display_after_id is not None:
+            try:
+                self.after_cancel(self.preview_display_after_id)
+            except tk.TclError:
+                pass
+            self.preview_display_after_id = None
+
+        delay_ms = 0 if immediate else 80
+        self.preview_display_after_id = self.after(delay_ms, self.refresh_preview_display)
+
+    def refresh_preview_display(self) -> None:
+        self.preview_display_after_id = None
+        if (
+            self.preview_source_png_bytes is None
+            or self.preview_source_size is None
+            or self.preview_label is None
+        ):
+            return
+
+        available_width = self.preview_host.winfo_width()
+        available_height = self.preview_host.winfo_height()
+        if available_width <= 1 or available_height <= 1:
+            self.schedule_preview_display_refresh()
+            return
+
+        target_size = fit_size_within_bounds(
+            self.preview_source_size[0],
+            self.preview_source_size[1],
+            available_width,
+            available_height,
+        )
+        if target_size == self.preview_display_size and self.preview_image is not None:
+            return
+
+        display_png_bytes = self.preview_source_png_bytes
+        if target_size != self.preview_source_size:
+            try:
+                display_png_bytes = resize_png_bytes(
+                    self.preview_source_png_bytes,
+                    target_size[0],
+                    target_size[1],
+                )
+            except Exception as exc:
+                self.status_var.set(f"图表预览缩放未更新：{exc}")
+                self.preview_display_size = None
+                return
+
+        self.preview_image = self.create_photo_image(display_png_bytes)
+        self.preview_label.configure(image=self.preview_image)
+        self.preview_display_size = target_size
+
+    @staticmethod
+    def create_photo_image(png_bytes: bytes) -> tk.PhotoImage:
+        return tk.PhotoImage(
+            data=base64.b64encode(png_bytes).decode("ascii"),
+            format="png",
+        )
 
     def clear_preview(self) -> None:
+        if self.preview_display_after_id is not None:
+            try:
+                self.after_cancel(self.preview_display_after_id)
+            except tk.TclError:
+                pass
+            self.preview_display_after_id = None
         if self.preview_label is not None:
             self.preview_label.destroy()
             self.preview_label = None
 
         self.preview_image = None
+        self.preview_source_png_bytes = None
+        self.preview_source_size = None
+        self.preview_display_size = None
         self.preview_placeholder.grid(row=0, column=0, sticky="nsew")
 
     @staticmethod
