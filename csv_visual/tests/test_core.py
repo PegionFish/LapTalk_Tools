@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from matplotlib.colors import to_rgba
+
 from hwinfo_plotter.core import (
     ChartStyle,
     HWiNFOData,
@@ -247,6 +249,39 @@ class CoreSmokeTests(unittest.TestCase):
 
         self.assertEqual(axis.lines[0].get_color(), "#ff0000")
         self.assertEqual(axis.lines[1].get_color(), "#00ff00")
+
+    def test_build_figure_applies_axis_grid_and_tick_text_colors(self) -> None:
+        column_index = next(
+            column.index
+            for column in self.data.columns
+            if len(self.data.extract_series(column.index)[1]) > 10
+        )
+
+        figure = build_figure(
+            self.data,
+            [column_index],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            style=ChartStyle(
+                axis_color="#112233",
+                grid_color="#223344",
+                time_text_color="#334455",
+                value_text_color="#445566",
+            ),
+        )
+        axis = figure.axes[0]
+        x_tick = axis.xaxis.get_major_ticks()[0]
+        y_tick = axis.yaxis.get_major_ticks()[0]
+
+        self.assertEqual(axis.spines["bottom"].get_edgecolor(), to_rgba("#112233"))
+        self.assertEqual(axis.spines["left"].get_edgecolor(), to_rgba("#112233"))
+        self.assertEqual(x_tick.tick1line.get_color(), "#112233")
+        self.assertEqual(y_tick.tick1line.get_color(), "#112233")
+        self.assertEqual(x_tick.label1.get_color(), "#334455")
+        self.assertEqual(y_tick.label1.get_color(), "#445566")
+        self.assertEqual(axis.get_xgridlines()[0].get_color(), "#223344")
+        self.assertEqual(axis.get_ygridlines()[0].get_color(), "#223344")
 
     def test_time_axis_uses_denser_ticks(self) -> None:
         base_time = datetime(2026, 4, 13, 12, 0, 0)

@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from matplotlib.colors import is_color_like
 from matplotlib import font_manager, rcParams
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, MultipleLocator
@@ -76,9 +77,13 @@ class ChartStyle:
     curve_only_mode: bool = False
     show_grid: bool = True
     grid_alpha: float = 0.28
+    grid_color: str | None = None
     show_legend: bool = True
     show_time_axis: bool = True
     show_value_axis: bool = True
+    axis_color: str | None = None
+    time_text_color: str | None = None
+    value_text_color: str | None = None
     legend_location: str = "best"
     time_tick_density: int = DEFAULT_TIME_TICK_DENSITY
     fixed_time_interval_seconds: int | None = None
@@ -260,6 +265,7 @@ def build_figure(
         )
     if chart_style.fixed_time_interval_seconds is not None and chart_style.fixed_time_interval_seconds <= 0:
         raise ValueError("固定时间刻度间隔必须大于 0。")
+    validate_chart_style_colors(chart_style)
     visible_start_seconds, visible_end_seconds = resolve_visible_range_seconds(data, visible_range_seconds)
 
     configure_matplotlib_fonts()
@@ -310,7 +316,14 @@ def build_figure(
     if chart_style.curve_only_mode:
         axis.grid(False)
     elif chart_style.show_grid:
-        axis.grid(True, linestyle="--", linewidth=0.8, alpha=chart_style.grid_alpha)
+        grid_kwargs: dict[str, object] = {
+            "linestyle": "--",
+            "linewidth": 0.8,
+            "alpha": chart_style.grid_alpha,
+        }
+        if chart_style.grid_color:
+            grid_kwargs["color"] = chart_style.grid_color
+        axis.grid(True, **grid_kwargs)
     else:
         axis.grid(False)
 
@@ -537,6 +550,18 @@ def resolve_chart_style(style: ChartStyle | None, title: str | None = None) -> C
     return style
 
 
+def validate_chart_style_colors(chart_style: ChartStyle) -> None:
+    color_fields = (
+        ("坐标轴颜色", chart_style.axis_color),
+        ("网格颜色", chart_style.grid_color),
+        ("时间文字颜色", chart_style.time_text_color),
+        ("数值文字颜色", chart_style.value_text_color),
+    )
+    for field_name, color_text in color_fields:
+        if color_text is not None and not is_color_like(color_text):
+            raise ValueError(f"{field_name}无效：{color_text}")
+
+
 def resolve_visible_range_seconds(
     data: HWiNFOData,
     visible_range_seconds: tuple[float, float] | None,
@@ -589,16 +614,32 @@ def configure_axis_visibility(axis, chart_style: ChartStyle) -> None:
         configure_curve_only_mode(axis)
         return
 
-    axis.tick_params(
-        axis="x",
-        which="both",
-        labelbottom=chart_style.show_time_axis,
-    )
-    axis.tick_params(
-        axis="y",
-        which="both",
-        labelleft=chart_style.show_value_axis,
-    )
+    if chart_style.axis_color:
+        for spine in axis.spines.values():
+            spine.set_edgecolor(chart_style.axis_color)
+
+    x_tick_kwargs: dict[str, object] = {
+        "axis": "x",
+        "which": "both",
+        "labelbottom": chart_style.show_time_axis,
+    }
+    y_tick_kwargs: dict[str, object] = {
+        "axis": "y",
+        "which": "both",
+        "labelleft": chart_style.show_value_axis,
+    }
+    if chart_style.axis_color:
+        x_tick_kwargs["color"] = chart_style.axis_color
+        y_tick_kwargs["color"] = chart_style.axis_color
+    if chart_style.time_text_color:
+        x_tick_kwargs["labelcolor"] = chart_style.time_text_color
+        axis.xaxis.get_offset_text().set_color(chart_style.time_text_color)
+    if chart_style.value_text_color:
+        y_tick_kwargs["labelcolor"] = chart_style.value_text_color
+        axis.yaxis.get_offset_text().set_color(chart_style.value_text_color)
+
+    axis.tick_params(**x_tick_kwargs)
+    axis.tick_params(**y_tick_kwargs)
     axis.xaxis.get_offset_text().set_visible(False)
     axis.yaxis.get_offset_text().set_visible(False)
 

@@ -40,6 +40,10 @@ class GuiBehaviorTests(unittest.TestCase):
         self.assertEqual(HWiNFOPlotterApp.normalize_hex_color("66CCFF"), "#66ccff")
         self.assertEqual(HWiNFOPlotterApp.normalize_hex_color("#123456"), "#123456")
 
+    def test_parse_optional_hex_color_accepts_empty_default(self) -> None:
+        self.assertIsNone(HWiNFOPlotterApp.parse_optional_hex_color("", "网格颜色"))
+        self.assertEqual(HWiNFOPlotterApp.parse_optional_hex_color("66CCFF", "网格颜色"), "#66ccff")
+
     def test_fit_size_within_bounds_preserves_aspect_ratio(self) -> None:
         self.assertEqual(fit_size_within_bounds(1600, 900, 800, 800), (800, 450))
         self.assertEqual(fit_size_within_bounds(900, 1600, 800, 800), (450, 800))
@@ -112,6 +116,10 @@ class GuiBehaviorTests(unittest.TestCase):
             app.trim_end_var.set(2)
             app.show_time_axis_var.set(False)
             app.show_value_axis_var.set(False)
+            app.axis_color_var.set("111111")
+            app.grid_color_var.set("222222")
+            app.time_text_color_var.set("333333")
+            app.value_text_color_var.set("444444")
 
             preview_request = app.build_preview_request()
 
@@ -124,6 +132,10 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.style.fixed_time_interval_seconds, 120)
             self.assertFalse(preview_request.style.show_time_axis)
             self.assertFalse(preview_request.style.show_value_axis)
+            self.assertEqual(preview_request.style.axis_color, "#111111")
+            self.assertEqual(preview_request.style.grid_color, "#222222")
+            self.assertEqual(preview_request.style.time_text_color, "#333333")
+            self.assertEqual(preview_request.style.value_text_color, "#444444")
             self.assertEqual(preview_request.visible_range_seconds, (1.0, 2.0))
         finally:
             app.on_close()

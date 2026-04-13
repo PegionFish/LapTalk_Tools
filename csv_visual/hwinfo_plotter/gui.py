@@ -154,6 +154,10 @@ class HWiNFOPlotterApp(tk.Tk):
         self.selection_var = tk.StringVar(value="当前未选择参数")
         self.status_var = tk.StringVar(value="请选择一个 HWiNFO CSV 文件。")
         self.series_color_var = tk.StringVar()
+        self.axis_color_var = tk.StringVar()
+        self.grid_color_var = tk.StringVar()
+        self.time_text_color_var = tk.StringVar()
+        self.value_text_color_var = tk.StringVar()
 
         self.filter_var.trace_add("write", self._on_filter_changed)
         for option_var in (
@@ -165,6 +169,10 @@ class HWiNFOPlotterApp(tk.Tk):
             self.fixed_time_interval_var,
             self.fixed_time_interval_unit_var,
             self.legend_location_var,
+            self.axis_color_var,
+            self.grid_color_var,
+            self.time_text_color_var,
+            self.value_text_color_var,
         ):
             option_var.trace_add("write", self._on_chart_option_changed)
         for option_var in (
@@ -360,6 +368,46 @@ class HWiNFOPlotterApp(tk.Tk):
             width=10,
         )
         legend_location_box.grid(row=8, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+
+        ttk.Label(options_frame, text="坐标轴颜色").grid(row=9, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.axis_color_var, width=10).grid(
+            row=9,
+            column=1,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="网格颜色").grid(row=9, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.grid_color_var, width=10).grid(
+            row=9,
+            column=3,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="时间文字颜色").grid(row=10, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.time_text_color_var, width=10).grid(
+            row=10,
+            column=1,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="数值文字颜色").grid(row=10, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.value_text_color_var, width=10).grid(
+            row=10,
+            column=3,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="颜色可输入 66CCFF 或 #66CCFF，留空使用默认。").grid(
+            row=11,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            pady=(8, 0),
+        )
 
         trim_frame = ttk.Labelframe(control_panel, text="可视化范围", padding=12)
         trim_frame.grid(row=6, column=0, sticky="ew", pady=(12, 0))
@@ -896,6 +944,10 @@ class HWiNFOPlotterApp(tk.Tk):
         self.show_time_axis_var.set(True)
         self.show_value_axis_var.set(True)
         self.legend_location_var.set("自动")
+        self.axis_color_var.set("")
+        self.grid_color_var.set("")
+        self.time_text_color_var.set("")
+        self.value_text_color_var.set("")
         self.status_var.set("图表样式已重置。")
         self.schedule_preview_refresh()
 
@@ -1032,6 +1084,10 @@ class HWiNFOPlotterApp(tk.Tk):
             show_legend=self.show_legend_var.get(),
             show_time_axis=self.show_time_axis_var.get(),
             show_value_axis=self.show_value_axis_var.get(),
+            axis_color=self.parse_optional_hex_color(self.axis_color_var.get(), "坐标轴颜色"),
+            grid_color=self.parse_optional_hex_color(self.grid_color_var.get(), "网格颜色"),
+            time_text_color=self.parse_optional_hex_color(self.time_text_color_var.get(), "时间文字颜色"),
+            value_text_color=self.parse_optional_hex_color(self.value_text_color_var.get(), "数值文字颜色"),
             legend_location=LEGEND_LOCATION_CHOICES.get(self.legend_location_var.get(), "best"),
             time_tick_density=self.parse_time_tick_density(),
             fixed_time_interval_seconds=self.parse_fixed_time_interval_seconds(),
@@ -1351,6 +1407,16 @@ class HWiNFOPlotterApp(tk.Tk):
             raise ValueError("颜色必须是 6 位十六进制数值，例如 66CCFF 或 #66CCFF。")
 
         return f"#{color_text.lower()}"
+
+    @classmethod
+    def parse_optional_hex_color(cls, value: str, field_name: str) -> str | None:
+        if not value.strip():
+            return None
+
+        try:
+            return cls.normalize_hex_color(value)
+        except ValueError as exc:
+            raise ValueError(f"{field_name}格式无效：{exc}") from exc
 
     def parse_time_tick_density(self) -> int:
         density_value = int(round(float(self.time_density_var.get())))
