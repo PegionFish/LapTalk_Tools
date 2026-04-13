@@ -6,24 +6,41 @@ from pathlib import Path
 from unittest.mock import patch
 
 from hwinfo_plotter.core import HWiNFOData, SensorColumn
-from hwinfo_plotter.gui import HWiNFOPlotterApp
+from hwinfo_plotter.gui import HWiNFOPlotterApp, PreloadSeriesResult
+
+
+def build_synthetic_data() -> HWiNFOData:
+    base_time = datetime(2026, 4, 13, 12, 0, 0)
+    return HWiNFOData(
+        source_path=Path("synthetic.csv"),
+        encoding="utf-8",
+        headers=["Date", "Time", "CPU", "GPU"],
+        columns=[
+            SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU"),
+            SensorColumn(index=3, name="GPU", occurrence=1, display_name="[003] GPU"),
+        ],
+        timestamps=[base_time + timedelta(seconds=index) for index in range(3)],
+        rows=[
+            ["13/04/2026", "12:00:00", "1.0", "2.0"],
+            ["13/04/2026", "12:00:01", "2.0", "3.0"],
+            ["13/04/2026", "12:00:02", "3.0", "4.0"],
+        ],
+    )
 
 
 class GuiBehaviorTests(unittest.TestCase):
+    def test_filter_list_has_usable_height_without_fullscreen(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.update()
+
+            self.assertGreaterEqual(app.column_listbox.winfo_height(), 120)
+            self.assertGreater(app.control_scroll_canvas.winfo_height(), 0)
+        finally:
+            app.on_close()
+
     def test_preview_request_scales_to_window_and_keeps_colors(self) -> None:
-        base_time = datetime(2026, 4, 13, 12, 0, 0)
-        data = HWiNFOData(
-            source_path=Path("synthetic.csv"),
-            encoding="utf-8",
-            headers=["Date", "Time", "CPU"],
-            columns=[SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU")],
-            timestamps=[base_time + timedelta(seconds=index) for index in range(3)],
-            rows=[
-                ["13/04/2026", "12:00:00", "1.0"],
-                ["13/04/2026", "12:00:01", "2.0"],
-                ["13/04/2026", "12:00:02", "3.0"],
-            ],
-        )
+        data = build_synthetic_data()
 
         app = HWiNFOPlotterApp()
         try:
@@ -57,6 +74,46 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.style.time_tick_density, 10)
             self.assertEqual(preview_request.style.fixed_time_interval_seconds, 120)
             self.assertEqual(preview_request.visible_range_seconds, (1.0, 2.0))
+        finally:
+            app.on_close()
+
+    def test_load_current_file_clears_stale_filter_and_lists_columns_immediately(self) -> None:
+        data = build_synthetic_data()
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.file_var.set("synthetic.csv")
+            app.filter_var.set("missing")
+
+            with patch.object(app, "start_background_preload") as mock_preload, patch(
+                "hwinfo_plotter.gui.load_hwinfo_csv",
+                return_value=data,
+            ) as mock_load:
+                app.load_current_file()
+
+            mock_load.assert_called_once_with("synthetic.csv", preload_numeric=False)
+            mock_preload.assert_called_once_with(data)
+            self.assertEqual(app.filter_var.get(), "")
+            self.assertEqual(app.visible_column_indices, [2, 3])
+            self.assertEqual(app.column_listbox.get(0, "end"), ("[002] CPU", "[003] GPU"))
+        finally:
+            app.on_close()
+
+    def test_process_preview_results_reports_preload_completion_without_selection(self) -> None:
+        data = build_synthetic_data()
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.data = data
+            app.active_preload_request_id = 3
+            app.preload_results.put(PreloadSeriesResult(request_id=3, data=data))
+
+            with patch.object(app, "after"):
+                app.process_preview_results()
+
+            self.assertEqual(app.status_var.get(), "全部数值序列已在后台预载入内存，后续预览和导出会更快。")
         finally:
             app.on_close()
 

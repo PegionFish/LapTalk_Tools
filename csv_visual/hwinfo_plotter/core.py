@@ -4,6 +4,7 @@ import codecs
 import csv
 import io
 import re
+import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -92,8 +93,9 @@ class HWiNFOData:
     skipped_rows: int = 0
     _column_map: dict[int, SensorColumn] = field(default_factory=dict, init=False, repr=False)
     _column_indices: tuple[int, ...] = field(default_factory=tuple, init=False, repr=False)
-    _series_cache: dict[int, tuple[list[datetime], list[float]]] = field(default_factory=dict, init=False, repr=False)
+    _series_cache: dict[int, tuple[list[float], list[float]]] = field(default_factory=dict, init=False, repr=False)
     _all_series_preloaded: bool = field(default=False, init=False, repr=False)
+    _series_cache_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.elapsed_seconds and self.timestamps:
@@ -108,7 +110,8 @@ class HWiNFOData:
             raise KeyError(f"未找到列索引 {column_index}") from exc
 
     def extract_series(self, column_index: int) -> tuple[list[float], list[float]]:
-        cached_series = self._series_cache.get(column_index)
+        with self._series_cache_lock:
+            cached_series = self._series_cache.get(column_index)
         if cached_series is not None:
             return cached_series
 
@@ -127,12 +130,17 @@ class HWiNFOData:
             y_values.append(numeric_value)
 
         series = (x_values, y_values)
-        self._series_cache[column_index] = series
-        return series
+        with self._series_cache_lock:
+            cached_series = self._series_cache.get(column_index)
+            if cached_series is not None:
+                return cached_series
+            self._series_cache[column_index] = series
+            return series
 
     def preload_numeric_series(self) -> None:
-        if self._all_series_preloaded:
-            return
+        with self._series_cache_lock:
+            if self._all_series_preloaded:
+                return
 
         x_series_map = {column_index: [] for column_index in self._column_indices}
         y_series_map = {column_index: [] for column_index in self._column_indices}
@@ -149,11 +157,14 @@ class HWiNFOData:
                 x_series_map[column_index].append(elapsed_seconds)
                 y_series_map[column_index].append(numeric_value)
 
-        self._series_cache = {
-            column_index: (x_series_map[column_index], y_series_map[column_index])
-            for column_index in self._column_indices
-        }
-        self._all_series_preloaded = True
+        with self._series_cache_lock:
+            if self._all_series_preloaded:
+                return
+            self._series_cache = {
+                column_index: (x_series_map[column_index], y_series_map[column_index])
+                for column_index in self._column_indices
+            }
+            self._all_series_preloaded = True
 
 
 def load_hwinfo_csv(path: Path | str, preload_numeric: bool = False) -> HWiNFOData:

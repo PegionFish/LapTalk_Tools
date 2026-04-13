@@ -62,6 +62,19 @@ class PreviewRenderResult:
     error_message: str | None = None
 
 
+@dataclass(frozen=True)
+class PreloadSeriesRequest:
+    request_id: int
+    data: HWiNFOData
+
+
+@dataclass(frozen=True)
+class PreloadSeriesResult:
+    request_id: int
+    data: HWiNFOData
+    error_message: str | None = None
+
+
 class HWiNFOPlotterApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -86,6 +99,14 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_shutdown_event = threading.Event()
         self.preview_worker = threading.Thread(target=self._preview_worker_loop, name="csv-visual-preview", daemon=True)
         self.preview_worker.start()
+        self.preload_request_id = 0
+        self.active_preload_request_id = 0
+        self.pending_preload_request: PreloadSeriesRequest | None = None
+        self.preload_results: Queue[PreloadSeriesResult] = Queue()
+        self.preload_request_lock = threading.Lock()
+        self.preload_request_event = threading.Event()
+        self.preload_worker = threading.Thread(target=self._preload_worker_loop, name="csv-visual-preload", daemon=True)
+        self.preload_worker.start()
 
         self.file_var = tk.StringVar(value=self._find_default_csv())
         self.filter_var = tk.StringVar()
@@ -152,15 +173,32 @@ class HWiNFOPlotterApp(tk.Tk):
         paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
         paned.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 10))
 
-        control_panel = ttk.Frame(paned, padding=(0, 0, 12, 0))
+        control_panel_wrapper = ttk.Frame(paned)
         preview_panel = ttk.Frame(paned)
-        control_panel.columnconfigure(0, weight=1)
-        control_panel.rowconfigure(2, weight=1)
+        control_panel_wrapper.columnconfigure(0, weight=1)
+        control_panel_wrapper.rowconfigure(0, weight=1)
         preview_panel.columnconfigure(0, weight=1)
         preview_panel.rowconfigure(0, weight=1)
 
-        paned.add(control_panel, weight=1)
+        paned.add(control_panel_wrapper, weight=1)
         paned.add(preview_panel, weight=3)
+
+        self.control_scroll_canvas = tk.Canvas(control_panel_wrapper, highlightthickness=0, borderwidth=0)
+        self.control_scroll_canvas.grid(row=0, column=0, sticky="nsew")
+
+        control_scrollbar = ttk.Scrollbar(
+            control_panel_wrapper,
+            orient=tk.VERTICAL,
+            command=self.control_scroll_canvas.yview,
+        )
+        control_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.control_scroll_canvas.configure(yscrollcommand=control_scrollbar.set)
+
+        control_panel = ttk.Frame(self.control_scroll_canvas, padding=(0, 0, 12, 0))
+        control_panel.columnconfigure(0, weight=1)
+        self.control_window_id = self.control_scroll_canvas.create_window((0, 0), window=control_panel, anchor="nw")
+        control_panel.bind("<Configure>", self._on_control_host_configure)
+        self.control_scroll_canvas.bind("<Configure>", self._on_control_canvas_configure)
 
         ttk.Label(control_panel, text="参数筛选").grid(row=0, column=0, sticky="w")
         ttk.Entry(control_panel, textvariable=self.filter_var).grid(row=1, column=0, sticky="ew", pady=(4, 8))
@@ -175,6 +213,7 @@ class HWiNFOPlotterApp(tk.Tk):
             selectmode=tk.EXTENDED,
             exportselection=False,
             activestyle="none",
+            height=14,
         )
         self.column_listbox.grid(row=0, column=0, sticky="nsew")
         self.column_listbox.bind("<<ListboxSelect>>", self.on_column_selection_changed)
@@ -503,6 +542,17 @@ class HWiNFOPlotterApp(tk.Tk):
     def _on_preview_host_configure(self, _event=None) -> None:
         self.update_preview_scroll_region()
 
+    def _on_control_host_configure(self, _event=None) -> None:
+        scroll_region = self.control_scroll_canvas.bbox("all")
+        if scroll_region is None:
+            scroll_region = (0, 0, 0, 0)
+        self.control_scroll_canvas.configure(scrollregion=scroll_region)
+
+    def _on_control_canvas_configure(self, event=None) -> None:
+        if event is None:
+            return
+        self.control_scroll_canvas.itemconfigure(self.control_window_id, width=event.width)
+
     def _on_preview_canvas_configure(self, event=None) -> None:
         if event is None:
             return
@@ -539,11 +589,12 @@ class HWiNFOPlotterApp(tk.Tk):
             return
 
         self.cancel_pending_preview_requests()
-        self.status_var.set("正在加载 CSV 并预计算全部列数据，请稍候...")
+        self.cancel_pending_preload_requests()
+        self.status_var.set("正在加载 CSV 并整理可用参数，请稍候...")
         self.update_idletasks()
 
         try:
-            self.data = load_hwinfo_csv(file_text, preload_numeric=True)
+            self.data = load_hwinfo_csv(file_text, preload_numeric=False)
         except Exception as exc:
             messagebox.showerror("加载失败", str(exc))
             self.status_var.set("CSV 加载失败。")
@@ -551,14 +602,18 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.selected_column_indices.clear()
         self.column_colors.clear()
-        self.refresh_column_list()
+        if self.filter_var.get():
+            self.filter_var.set("")
+        else:
+            self.refresh_column_list()
         self.refresh_selected_series_list()
         self.configure_trim_controls()
         self.clear_preview()
+        self.start_background_preload(self.data)
         self.status_var.set(
             f"已加载 {self.data.source_path.name}，共 {len(self.data.timestamps)} 行有效数据，"
             f"{len(self.data.columns)} 个可选参数，编码：{self.data.encoding}。"
-            "数值列已预载入内存，选择参数后会在后台自动预览。"
+            "数值序列正在后台预载入内存，选择参数后会在后台自动预览。"
         )
         self.schedule_preview_refresh(immediate=True)
 
@@ -884,6 +939,24 @@ class HWiNFOPlotterApp(tk.Tk):
             self.pending_preview_request = None
             self.preview_request_event.clear()
 
+    def start_background_preload(self, data: HWiNFOData) -> None:
+        self.preload_request_id += 1
+        preload_request = PreloadSeriesRequest(
+            request_id=self.preload_request_id,
+            data=data,
+        )
+        self.active_preload_request_id = preload_request.request_id
+        with self.preload_request_lock:
+            self.pending_preload_request = preload_request
+            self.preload_request_event.set()
+
+    def cancel_pending_preload_requests(self) -> None:
+        self.preload_request_id += 1
+        self.active_preload_request_id = self.preload_request_id
+        with self.preload_request_lock:
+            self.pending_preload_request = None
+            self.preload_request_event.clear()
+
     def _preview_worker_loop(self) -> None:
         while not self.preview_shutdown_event.is_set():
             self.preview_request_event.wait(0.1)
@@ -927,6 +1000,41 @@ class HWiNFOPlotterApp(tk.Tk):
                 )
             )
 
+    def _preload_worker_loop(self) -> None:
+        while not self.preview_shutdown_event.is_set():
+            self.preload_request_event.wait(0.1)
+            if self.preview_shutdown_event.is_set():
+                return
+            if not self.preload_request_event.is_set():
+                continue
+
+            with self.preload_request_lock:
+                preload_request = self.pending_preload_request
+                self.pending_preload_request = None
+                self.preload_request_event.clear()
+
+            if preload_request is None:
+                continue
+
+            try:
+                preload_request.data.preload_numeric_series()
+            except Exception as exc:
+                self.preload_results.put(
+                    PreloadSeriesResult(
+                        request_id=preload_request.request_id,
+                        data=preload_request.data,
+                        error_message=str(exc),
+                    )
+                )
+                continue
+
+            self.preload_results.put(
+                PreloadSeriesResult(
+                    request_id=preload_request.request_id,
+                    data=preload_request.data,
+                )
+            )
+
     def process_preview_results(self) -> None:
         try:
             while True:
@@ -945,6 +1053,24 @@ class HWiNFOPlotterApp(tk.Tk):
                     self.status_var.set("图表预览已在后台更新。")
         except Empty:
             pass
+
+        try:
+            while True:
+                preload_result = self.preload_results.get_nowait()
+                if preload_result.request_id != self.active_preload_request_id:
+                    continue
+                if preload_result.data is not self.data:
+                    continue
+
+                if preload_result.error_message is not None:
+                    if not self.get_selected_columns():
+                        self.status_var.set(f"后台预载失败：{preload_result.error_message}")
+                    continue
+
+                if not self.get_selected_columns():
+                    self.status_var.set("全部数值序列已在后台预载入内存，后续预览和导出会更快。")
+        except Empty:
+            pass
         finally:
             if not self.preview_shutdown_event.is_set():
                 self.after(80, self.process_preview_results)
@@ -952,6 +1078,7 @@ class HWiNFOPlotterApp(tk.Tk):
     def on_close(self) -> None:
         self.preview_shutdown_event.set()
         self.preview_request_event.set()
+        self.preload_request_event.set()
         self.destroy()
 
     def get_selected_columns(self) -> list[int]:
