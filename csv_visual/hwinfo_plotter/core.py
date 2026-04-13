@@ -3,13 +3,12 @@ from __future__ import annotations
 import codecs
 import csv
 import io
-import math
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from matplotlib import dates as mdates
 from matplotlib import font_manager, rcParams
@@ -217,7 +216,7 @@ def build_figure(
     height_px: int = 1080,
     dpi: int = 160,
     style: ChartStyle | None = None,
-    max_points_per_series: int | None = None,
+    color_by_column: Mapping[int, str] | None = None,
 ) -> Figure:
     if not column_indices:
         raise ValueError("至少需要选择一个参数。")
@@ -225,8 +224,6 @@ def build_figure(
         raise ValueError("输出尺寸过小，请至少使用 200 x 200。")
     if dpi < 72:
         raise ValueError("DPI 不能小于 72。")
-    if max_points_per_series is not None and max_points_per_series < 2:
-        raise ValueError("每条曲线的最大点数不能小于 2。")
 
     chart_style = resolve_chart_style(style, title=title)
     if chart_style.line_width <= 0:
@@ -257,13 +254,18 @@ def build_figure(
         x_values, y_values = data.extract_series(column_index)
         if not y_values:
             continue
-        plot_x_values, plot_y_values = downsample_series(x_values, y_values, max_points=max_points_per_series)
+        line_kwargs: dict[str, object] = {}
+        if color_by_column is not None:
+            selected_color = color_by_column.get(column_index)
+            if selected_color:
+                line_kwargs["color"] = selected_color
 
         axis.plot(
-            plot_x_values,
-            plot_y_values,
+            x_values,
+            y_values,
             linewidth=chart_style.line_width,
             label=sensor_column.display_name,
+            **line_kwargs,
         )
         plotted_line_count += 1
 
@@ -481,25 +483,6 @@ def resolve_chart_style(style: ChartStyle | None, title: str | None = None) -> C
     if title is not None and not style.title:
         return replace(style, title=title)
     return style
-
-
-def downsample_series(
-    x_values: Sequence[datetime],
-    y_values: Sequence[float],
-    max_points: int | None = None,
-) -> tuple[Sequence[datetime], Sequence[float]]:
-    if max_points is None or len(x_values) <= max_points:
-        return x_values, y_values
-
-    step = max(1, math.ceil(len(x_values) / max_points))
-    sampled_x = list(x_values[::step])
-    sampled_y = list(y_values[::step])
-
-    if sampled_x[-1] != x_values[-1]:
-        sampled_x.append(x_values[-1])
-        sampled_y.append(y_values[-1])
-
-    return sampled_x, sampled_y
 
 
 def configure_matplotlib_fonts() -> None:

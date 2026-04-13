@@ -138,33 +138,40 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertIs(first_series, second_series)
         self.assertEqual(mock_parse.call_count, 3)
 
-    def test_build_figure_can_downsample_large_series(self) -> None:
+    def test_build_figure_applies_per_series_colors(self) -> None:
         base_time = datetime(2026, 4, 13, 12, 0, 0)
-        timestamps = [base_time + timedelta(seconds=index) for index in range(20)]
+        timestamps = [base_time + timedelta(seconds=index) for index in range(3)]
         data = HWiNFOData(
             source_path=Path("synthetic.csv"),
             encoding="utf-8",
-            headers=["Date", "Time", "CPU"],
-            columns=[SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU")],
+            headers=["Date", "Time", "CPU", "GPU"],
+            columns=[
+                SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU"),
+                SensorColumn(index=3, name="GPU", occurrence=1, display_name="[003] GPU"),
+            ],
             timestamps=timestamps,
             rows=[
-                ["13/04/2026", f"12:00:{index:02d}", f"{float(index):.1f}"]
-                for index in range(20)
+                ["13/04/2026", "12:00:00", "1.0", "2.0"],
+                ["13/04/2026", "12:00:01", "2.0", "3.0"],
+                ["13/04/2026", "12:00:02", "3.0", "4.0"],
             ],
         )
 
         figure = build_figure(
             data,
-            [2],
+            [2, 3],
             width_px=1280,
             height_px=720,
             dpi=120,
-            max_points_per_series=5,
+            color_by_column={
+                2: "#ff0000",
+                3: "#00ff00",
+            },
         )
         axis = figure.axes[0]
 
-        self.assertLessEqual(len(axis.lines[0].get_xdata()), 6)
-        self.assertEqual(axis.lines[0].get_ydata()[-1], 19.0)
+        self.assertEqual(axis.lines[0].get_color(), "#ff0000")
+        self.assertEqual(axis.lines[1].get_color(), "#00ff00")
 
 
 if __name__ == "__main__":
