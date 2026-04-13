@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -8,6 +9,11 @@ from unittest.mock import patch
 
 from hwinfo_plotter.core import HWiNFOData, SensorColumn
 from hwinfo_plotter.gui import HWiNFOPlotterApp, PreloadSeriesResult
+
+
+TEST_PREVIEW_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+)
 
 
 def build_synthetic_data() -> HWiNFOData:
@@ -77,7 +83,7 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_preview_request_scales_to_window_and_keeps_colors(self) -> None:
+    def test_preview_request_keeps_export_size_and_colors(self) -> None:
         data = build_synthetic_data()
 
         app = HWiNFOPlotterApp()
@@ -97,21 +103,35 @@ class GuiBehaviorTests(unittest.TestCase):
             app.trim_start_var.set(1)
             app.trim_end_var.set(2)
 
-            with patch.object(app.preview_host, "winfo_width", return_value=824), patch.object(
-                app.preview_host,
-                "winfo_height",
-                return_value=624,
-            ):
-                preview_request = app.build_preview_request()
+            preview_request = app.build_preview_request()
 
-            self.assertEqual(preview_request.width_px, 800)
-            self.assertEqual(preview_request.height_px, 450)
-            self.assertEqual(preview_request.dpi, 72)
+            self.assertEqual(preview_request.width_px, 1600)
+            self.assertEqual(preview_request.height_px, 900)
+            self.assertEqual(preview_request.dpi, 144)
             self.assertEqual(preview_request.color_by_column, {2: "#123456"})
             self.assertEqual(preview_request.style.title, "预览测试")
             self.assertEqual(preview_request.style.time_tick_density, 10)
             self.assertEqual(preview_request.style.fixed_time_interval_seconds, 120)
             self.assertEqual(preview_request.visible_range_seconds, (1.0, 2.0))
+        finally:
+            app.on_close()
+
+    def test_show_preview_image_replaces_placeholder_with_png(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+
+            app.show_preview_image(TEST_PREVIEW_PNG_BYTES)
+            app.update_idletasks()
+
+            self.assertIsNotNone(app.preview_image)
+            self.assertIsNotNone(app.preview_label)
+            self.assertTrue(app.preview_label.winfo_exists())
+            image_value = app.preview_label.cget("image")
+            if isinstance(image_value, tuple):
+                image_value = image_value[0]
+            self.assertEqual(image_value, str(app.preview_image))
+            self.assertFalse(app.preview_placeholder.winfo_ismapped())
         finally:
             app.on_close()
 

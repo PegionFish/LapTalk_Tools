@@ -321,13 +321,20 @@ def build_figure(
 def save_figure(figure: Figure, output_path: Path | str) -> Path:
     destination = Path(output_path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(render_figure_png_bytes(figure))
+    return destination
+
+
+def render_figure_png_bytes(figure: Figure) -> bytes:
+    buffer = io.BytesIO()
     figure.savefig(
-        destination,
+        buffer,
+        format="png",
         transparent=True,
         bbox_inches="tight",
         pad_inches=0.15,
     )
-    return destination
+    return buffer.getvalue()
 
 
 def build_default_output_name(data: HWiNFOData, column_indices: Sequence[int]) -> str:

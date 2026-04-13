@@ -1,13 +1,12 @@
 from __future__ import annotations
 
+import base64
 import threading
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
 from tkinter import colorchooser, filedialog, messagebox, ttk
-
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from .core import (
     ChartStyle,
@@ -19,6 +18,7 @@ from .core import (
     build_figure,
     format_elapsed_time,
     load_hwinfo_csv,
+    render_figure_png_bytes,
     save_figure,
 )
 
@@ -32,8 +32,6 @@ LEGEND_LOCATION_CHOICES = {
     "上方居中": "upper center",
     "下方居中": "lower center",
 }
-PREVIEW_MIN_DPI = 24
-PREVIEW_PADDING = 24
 TIME_INTERVAL_UNIT_CHOICES = {
     "自动": None,
     "秒": 1,
@@ -58,7 +56,7 @@ class PreviewRenderRequest:
 @dataclass(frozen=True)
 class PreviewRenderResult:
     request_id: int
-    figure: object | None = None
+    png_bytes: bytes | None = None
     error_message: str | None = None
 
 
@@ -86,12 +84,11 @@ class HWiNFOPlotterApp(tk.Tk):
         self.visible_column_indices: list[int] = []
         self.selected_column_indices: set[int] = set()
         self.column_colors: dict[int, str] = {}
-        self.preview_canvas: FigureCanvasTkAgg | None = None
-        self.preview_figure = None
+        self.preview_label: ttk.Label | None = None
+        self.preview_image: tk.PhotoImage | None = None
         self.preview_after_id: str | None = None
         self.preview_request_id = 0
         self.active_preview_request_id = 0
-        self.last_preview_view_size: tuple[int, int] | None = None
         self.pending_preview_request: PreviewRenderRequest | None = None
         self.preview_results: Queue[PreviewRenderResult] = Queue()
         self.preview_request_lock = threading.Lock()
@@ -409,7 +406,6 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_host.columnconfigure(0, weight=1)
         self.preview_host.rowconfigure(0, weight=1)
         self.preview_host.grid_propagate(False)
-        self.preview_host.bind("<Configure>", self._on_preview_host_configure)
 
         self.preview_placeholder = ttk.Label(
             self.preview_host,
@@ -581,18 +577,6 @@ class HWiNFOPlotterApp(tk.Tk):
         if event is None:
             return
         self.control_scroll_canvas.itemconfigure(self.control_window_id, width=event.width)
-
-    def _on_preview_host_configure(self, event=None) -> None:
-        if event is None:
-            return
-
-        current_size = (event.width, event.height)
-        if current_size == self.last_preview_view_size:
-            return
-
-        self.last_preview_view_size = current_size
-        if self.data and self.get_selected_columns():
-            self.schedule_preview_refresh()
 
     def browse_csv(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -836,16 +820,20 @@ class HWiNFOPlotterApp(tk.Tk):
         if not output_path:
             return
 
+        figure = None
         try:
-            figure = self.build_current_figure(preview=False)
+            figure = self.build_current_figure()
             destination = save_figure(figure, output_path)
         except Exception as exc:
             messagebox.showerror("导出失败", str(exc))
             return
+        finally:
+            if figure is not None:
+                figure.clear()
 
         self.status_var.set(f"已导出透明 PNG：{destination}")
 
-    def build_current_figure(self, *, preview: bool = False):
+    def build_current_figure(self):
         (
             selected_columns,
             width_px,
@@ -854,7 +842,7 @@ class HWiNFOPlotterApp(tk.Tk):
             style,
             color_by_column,
             visible_range_seconds,
-        ) = self.collect_render_options(preview=preview)
+        ) = self.collect_render_options()
         if not self.data:
             raise ValueError("请先加载一个 CSV 文件。")
 
@@ -878,7 +866,7 @@ class HWiNFOPlotterApp(tk.Tk):
             style,
             color_by_column,
             visible_range_seconds,
-        ) = self.collect_render_options(preview=True)
+        ) = self.collect_render_options()
         if not self.data:
             raise ValueError("请先加载一个 CSV 文件。")
 
@@ -896,11 +884,7 @@ class HWiNFOPlotterApp(tk.Tk):
             visible_range_seconds=visible_range_seconds,
         )
 
-    def collect_render_options(
-        self,
-        *,
-        preview: bool,
-    ) -> tuple[list[int], int, int, int, ChartStyle, dict[int, str], tuple[float, float] | None]:
+    def collect_render_options(self) -> tuple[list[int], int, int, int, ChartStyle, dict[int, str], tuple[float, float] | None]:
         selected_columns = self.get_selected_columns()
         if not selected_columns:
             raise ValueError("请至少选择一个参数。")
@@ -918,8 +902,6 @@ class HWiNFOPlotterApp(tk.Tk):
             time_tick_density=self.parse_time_tick_density(),
             fixed_time_interval_seconds=self.parse_fixed_time_interval_seconds(),
         )
-        if preview:
-            width_px, height_px, dpi = self.get_preview_render_options(width_px, height_px, dpi)
         color_by_column = {
             column_index: color_text
             for column_index, color_text in self.column_colors.items()
@@ -928,27 +910,6 @@ class HWiNFOPlotterApp(tk.Tk):
         visible_range_seconds = self.get_visible_range_seconds()
 
         return selected_columns, width_px, height_px, dpi, style, color_by_column, visible_range_seconds
-
-    def get_preview_render_options(self, width_px: int, height_px: int, dpi: int) -> tuple[int, int, int]:
-        available_width = max(1, self.preview_host.winfo_width() - PREVIEW_PADDING)
-        available_height = max(1, self.preview_host.winfo_height() - PREVIEW_PADDING)
-
-        if available_width <= 1 or available_height <= 1:
-            return width_px, height_px, dpi
-
-        scale = min(
-            1.0,
-            available_width / width_px,
-            available_height / height_px,
-        )
-        if scale >= 1.0:
-            return width_px, height_px, dpi
-
-        preview_dpi = max(PREVIEW_MIN_DPI, int(round(dpi * scale)))
-        effective_scale = preview_dpi / dpi
-        preview_width = max(200, int(round(width_px * effective_scale)))
-        preview_height = max(200, int(round(height_px * effective_scale)))
-        return preview_width, preview_height, preview_dpi
 
     def enqueue_preview_request(self, preview_request: PreviewRenderRequest) -> None:
         with self.preview_request_lock:
@@ -996,6 +957,7 @@ class HWiNFOPlotterApp(tk.Tk):
             if preview_request is None:
                 continue
 
+            figure = None
             try:
                 figure = build_figure(
                     preview_request.data,
@@ -1007,6 +969,7 @@ class HWiNFOPlotterApp(tk.Tk):
                     color_by_column=preview_request.color_by_column,
                     visible_range_seconds=preview_request.visible_range_seconds,
                 )
+                png_bytes = render_figure_png_bytes(figure)
             except Exception as exc:
                 self.preview_results.put(
                     PreviewRenderResult(
@@ -1015,11 +978,14 @@ class HWiNFOPlotterApp(tk.Tk):
                     )
                 )
                 continue
+            finally:
+                if figure is not None:
+                    figure.clear()
 
             self.preview_results.put(
                 PreviewRenderResult(
                     request_id=preview_request.request_id,
-                    figure=figure,
+                    png_bytes=png_bytes,
                 )
             )
 
@@ -1063,16 +1029,14 @@ class HWiNFOPlotterApp(tk.Tk):
             while True:
                 preview_result = self.preview_results.get_nowait()
                 if preview_result.request_id != self.active_preview_request_id:
-                    if preview_result.figure is not None:
-                        preview_result.figure.clear()
                     continue
 
                 if preview_result.error_message is not None:
                     self.status_var.set(f"自动预览未更新：{preview_result.error_message}")
                     continue
 
-                if preview_result.figure is not None:
-                    self.show_figure(preview_result.figure)
+                if preview_result.png_bytes is not None:
+                    self.show_preview_image(preview_result.png_bytes)
                     self.status_var.set("图表预览已在后台更新。")
         except Empty:
             pass
@@ -1111,26 +1075,27 @@ class HWiNFOPlotterApp(tk.Tk):
         selected_set = set(self.selected_column_indices)
         return [column.index for column in self.data.columns if column.index in selected_set]
 
-    def show_figure(self, figure) -> None:
+    def show_preview_image(self, png_bytes: bytes) -> None:
         self.clear_preview()
 
         self.preview_placeholder.grid_remove()
-        canvas = FigureCanvasTkAgg(figure, master=self.preview_host)
-        canvas.draw()
-        canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
-
-        self.preview_canvas = canvas
-        self.preview_figure = figure
+        self.preview_image = tk.PhotoImage(
+            data=base64.b64encode(png_bytes).decode("ascii"),
+            format="png",
+        )
+        self.preview_label = ttk.Label(
+            self.preview_host,
+            image=self.preview_image,
+            anchor="center",
+        )
+        self.preview_label.grid(row=0, column=0, sticky="nsew")
 
     def clear_preview(self) -> None:
-        if self.preview_canvas is not None:
-            widget = self.preview_canvas.get_tk_widget()
-            widget.destroy()
-            self.preview_canvas = None
+        if self.preview_label is not None:
+            self.preview_label.destroy()
+            self.preview_label = None
 
-        if self.preview_figure is not None:
-            self.preview_figure.clear()
-        self.preview_figure = None
+        self.preview_image = None
         self.preview_placeholder.grid(row=0, column=0, sticky="nsew")
 
     @staticmethod

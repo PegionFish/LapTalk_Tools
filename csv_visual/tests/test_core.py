@@ -14,6 +14,7 @@ from hwinfo_plotter.core import (
     decode_csv_bytes,
     load_hwinfo_csv,
     parse_numeric_value,
+    render_figure_png_bytes,
     save_figure,
 )
 
@@ -63,6 +64,30 @@ class CoreSmokeTests(unittest.TestCase):
         finally:
             if output_path.exists():
                 output_path.unlink()
+
+    def test_render_figure_png_bytes_returns_png_signature(self) -> None:
+        column_index = next(
+            column.index
+            for column in self.data.columns
+            if len(self.data.extract_series(column.index)[1]) > 10
+        )
+
+        figure = build_figure(
+            self.data,
+            [column_index],
+            title="In-Memory Preview",
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+        )
+
+        try:
+            png_bytes = render_figure_png_bytes(figure)
+        finally:
+            figure.clear()
+
+        self.assertTrue(png_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertGreater(len(png_bytes), 0)
 
     def test_build_figure_applies_style_options(self) -> None:
         column_indices = [
