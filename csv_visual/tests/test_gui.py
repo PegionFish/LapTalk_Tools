@@ -48,6 +48,10 @@ class GuiBehaviorTests(unittest.TestCase):
         self.assertIsNone(HWiNFOPlotterApp.parse_optional_text("   "))
         self.assertEqual(HWiNFOPlotterApp.parse_optional_text("  Microsoft YaHei  "), "Microsoft YaHei")
 
+    def test_parse_optional_font_family_accepts_auto_default(self) -> None:
+        self.assertIsNone(HWiNFOPlotterApp.parse_optional_font_family("自动"))
+        self.assertEqual(HWiNFOPlotterApp.parse_optional_font_family("Microsoft YaHei"), "Microsoft YaHei")
+
     def test_pick_csv_drop_path_uses_first_csv_file(self) -> None:
         self.assertEqual(
             HWiNFOPlotterApp.pick_csv_drop_path(
@@ -63,6 +67,14 @@ class GuiBehaviorTests(unittest.TestCase):
     def test_fit_size_within_bounds_preserves_aspect_ratio(self) -> None:
         self.assertEqual(fit_size_within_bounds(1600, 900, 800, 800), (800, 450))
         self.assertEqual(fit_size_within_bounds(900, 1600, 800, 800), (450, 800))
+
+    def test_font_family_choices_start_with_auto(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            self.assertTrue(app.font_family_choices)
+            self.assertEqual(app.font_family_choices[0], "自动")
+        finally:
+            app.on_close()
 
     def test_filter_list_has_usable_height_without_fullscreen(self) -> None:
         app = HWiNFOPlotterApp()
@@ -203,6 +215,36 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(app.column_colors, {})
             mock_error.assert_called_once()
             mock_refresh.assert_not_called()
+        finally:
+            app.on_close()
+
+    def test_choose_chart_option_color_uses_color_picker(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+
+            with patch("hwinfo_plotter.gui.colorchooser.askcolor", return_value=((102, 204, 255), "#66ccff")), patch.object(
+                app,
+                "schedule_preview_refresh",
+            ) as mock_refresh:
+                app.choose_chart_option_color(app.time_text_color_var, "时间文字颜色")
+
+            self.assertEqual(app.time_text_color_var.get(), "66CCFF")
+            mock_refresh.assert_called_once_with(immediate=True)
+        finally:
+            app.on_close()
+
+    def test_clear_chart_option_color_clears_existing_value(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.legend_text_color_var.set("112233")
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.clear_chart_option_color(app.legend_text_color_var)
+
+            self.assertEqual(app.legend_text_color_var.get(), "")
+            mock_refresh.assert_called_once_with(immediate=True)
         finally:
             app.on_close()
 

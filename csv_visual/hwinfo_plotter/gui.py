@@ -21,6 +21,7 @@ from .core import (
     build_default_output_name,
     build_figure,
     format_elapsed_time,
+    list_available_font_families,
     load_hwinfo_csv,
     render_figure_png_bytes,
     save_figure,
@@ -296,6 +297,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preload_request_event = threading.Event()
         self.preload_worker = threading.Thread(target=self._preload_worker_loop, name="csv-visual-preload", daemon=True)
         self.preload_worker.start()
+        self.font_family_choices = ("自动", *list_available_font_families())
 
         self.file_var = tk.StringVar(value=self._find_default_csv())
         self.filter_var = tk.StringVar()
@@ -315,6 +317,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.trim_duration_label_var = tk.StringVar(value="可视化范围：00:00:00 → 00:00:00")
         self._updating_trim_controls = False
         self._updating_curve_only_mode = False
+        self._suppress_chart_option_refresh = False
         self.curve_only_mode_var = tk.BooleanVar(value=False)
         self.show_grid_var = tk.BooleanVar(value=True)
         self.show_legend_var = tk.BooleanVar(value=True)
@@ -329,7 +332,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_text_color_var = tk.StringVar()
         self.value_text_color_var = tk.StringVar()
         self.legend_text_color_var = tk.StringVar()
-        self.font_family_var = tk.StringVar()
+        self.font_family_var = tk.StringVar(value="自动")
 
         self.filter_var.trace_add("write", self._on_filter_changed)
         for option_var in (
@@ -544,56 +547,59 @@ class HWiNFOPlotterApp(tk.Tk):
         )
         legend_location_box.grid(row=8, column=1, columnspan=3, sticky="ew", pady=(8, 0))
 
-        ttk.Label(options_frame, text="坐标轴颜色").grid(row=9, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.axis_color_var, width=10).grid(
+        self._build_chart_color_row(
+            options_frame,
             row=9,
-            column=1,
-            sticky="ew",
-            pady=(8, 0),
+            label_text="坐标轴颜色",
+            color_var=self.axis_color_var,
+            field_name="坐标轴颜色",
         )
-
-        ttk.Label(options_frame, text="网格颜色").grid(row=9, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.grid_color_var, width=10).grid(
-            row=9,
-            column=3,
-            sticky="ew",
-            pady=(8, 0),
-        )
-
-        ttk.Label(options_frame, text="时间文字颜色").grid(row=10, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.time_text_color_var, width=10).grid(
+        self._build_chart_color_row(
+            options_frame,
             row=10,
-            column=1,
-            sticky="ew",
-            pady=(8, 0),
+            label_text="网格颜色",
+            color_var=self.grid_color_var,
+            field_name="网格颜色",
         )
-
-        ttk.Label(options_frame, text="数值文字颜色").grid(row=10, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.value_text_color_var, width=10).grid(
-            row=10,
-            column=3,
-            sticky="ew",
-            pady=(8, 0),
-        )
-
-        ttk.Label(options_frame, text="图例文字颜色").grid(row=11, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.legend_text_color_var, width=10).grid(
+        self._build_chart_color_row(
+            options_frame,
             row=11,
-            column=1,
-            sticky="ew",
-            pady=(8, 0),
+            label_text="时间文字颜色",
+            color_var=self.time_text_color_var,
+            field_name="时间文字颜色",
         )
-
-        ttk.Label(options_frame, text="字体名称").grid(row=11, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.font_family_var, width=10).grid(
-            row=11,
-            column=3,
-            sticky="ew",
-            pady=(8, 0),
-        )
-
-        ttk.Label(options_frame, text="颜色可输入 66CCFF 或 #66CCFF；字体留空自动选择，示例：Microsoft YaHei。").grid(
+        self._build_chart_color_row(
+            options_frame,
             row=12,
+            label_text="数值文字颜色",
+            color_var=self.value_text_color_var,
+            field_name="数值文字颜色",
+        )
+        self._build_chart_color_row(
+            options_frame,
+            row=13,
+            label_text="图例文字颜色",
+            color_var=self.legend_text_color_var,
+            field_name="图例文字颜色",
+        )
+
+        ttk.Label(options_frame, text="字体").grid(row=14, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Combobox(
+            options_frame,
+            textvariable=self.font_family_var,
+            values=self.font_family_choices,
+            state="readonly",
+            height=20,
+        ).grid(
+            row=14,
+            column=1,
+            columnspan=3,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="颜色支持 HEX 输入与取色器；字体请从下拉列表选择。").grid(
+            row=15,
             column=0,
             columnspan=4,
             sticky="w",
@@ -795,6 +801,8 @@ class HWiNFOPlotterApp(tk.Tk):
         return False
 
     def _on_chart_option_changed(self, *_args) -> None:
+        if self._suppress_chart_option_refresh:
+            return
         self.schedule_preview_refresh()
 
     def _on_standard_chart_element_changed(self, *_args) -> None:
@@ -935,6 +943,85 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.file_var.set(file_path)
         self.load_current_file()
+
+    def _build_chart_color_row(
+        self,
+        parent,
+        *,
+        row: int,
+        label_text: str,
+        color_var: tk.StringVar,
+        field_name: str,
+    ) -> None:
+        ttk.Label(parent, text=label_text).grid(row=row, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+
+        entry = ttk.Entry(parent, textvariable=color_var, width=10)
+        entry.grid(row=row, column=1, sticky="ew", pady=(8, 0))
+
+        button_row = ttk.Frame(parent)
+        button_row.grid(row=row, column=2, columnspan=2, sticky="ew", pady=(8, 0))
+        button_row.columnconfigure((0, 1), weight=1)
+
+        ttk.Button(
+            button_row,
+            text="取色器...",
+            command=lambda selected_var=color_var, selected_field_name=field_name: self.choose_chart_option_color(
+                selected_var,
+                selected_field_name,
+            ),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(
+            button_row,
+            text="清除",
+            command=lambda selected_var=color_var: self.clear_chart_option_color(selected_var),
+        ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+        entry.bind(
+            "<Return>",
+            lambda _event, selected_var=color_var: self.apply_chart_option_color_entry(selected_var),
+        )
+
+    def apply_chart_option_color_entry(self, color_var: tk.StringVar) -> str:
+        color_text = color_var.get().strip()
+        if color_text:
+            try:
+                self._set_chart_option_var(color_var, self.normalize_hex_color(color_text).removeprefix("#").upper())
+            except ValueError:
+                pass
+
+        self.schedule_preview_refresh(immediate=True)
+        return "break"
+
+    def choose_chart_option_color(self, color_var: tk.StringVar, field_name: str) -> None:
+        initial_color = None
+        try:
+            initial_color = self.normalize_hex_color(color_var.get())
+        except ValueError:
+            pass
+
+        _, selected_color = colorchooser.askcolor(
+            title=f"选择{field_name}",
+            initialcolor=initial_color,
+        )
+        if not selected_color:
+            return
+
+        self._set_chart_option_var(color_var, selected_color.removeprefix("#").upper())
+        self.schedule_preview_refresh(immediate=True)
+
+    def clear_chart_option_color(self, color_var: tk.StringVar) -> None:
+        if not color_var.get().strip():
+            return
+
+        self._set_chart_option_var(color_var, "")
+        self.schedule_preview_refresh(immediate=True)
+
+    def _set_chart_option_var(self, color_var: tk.StringVar, value: str) -> None:
+        self._suppress_chart_option_refresh = True
+        try:
+            color_var.set(value)
+        finally:
+            self._suppress_chart_option_refresh = False
 
     def enable_file_drop(self) -> None:
         file_drop_manager = WindowsFileDropManager(self)
@@ -1182,7 +1269,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_text_color_var.set("")
         self.value_text_color_var.set("")
         self.legend_text_color_var.set("")
-        self.font_family_var.set("")
+        self.font_family_var.set("自动")
         self.status_var.set("图表样式已重置。")
         self.schedule_preview_refresh()
 
@@ -1313,7 +1400,7 @@ class HWiNFOPlotterApp(tk.Tk):
         line_width = self.parse_positive_float(self.line_width_var.get(), "曲线线宽")
         style = ChartStyle(
             title=self.title_var.get().strip() or None,
-            font_family=self.parse_optional_text(self.font_family_var.get()),
+            font_family=self.parse_optional_font_family(self.font_family_var.get()),
             line_width=line_width,
             curve_only_mode=self.curve_only_mode_var.get(),
             show_grid=self.show_grid_var.get(),
@@ -1668,6 +1755,13 @@ class HWiNFOPlotterApp(tk.Tk):
     def parse_optional_text(value: str) -> str | None:
         text = value.strip()
         return text or None
+
+    @classmethod
+    def parse_optional_font_family(cls, value: str) -> str | None:
+        text = cls.parse_optional_text(value)
+        if text in (None, "自动"):
+            return None
+        return text
 
     def parse_time_tick_density(self) -> int:
         density_value = int(round(float(self.time_density_var.get())))

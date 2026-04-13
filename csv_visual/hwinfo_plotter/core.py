@@ -592,6 +592,13 @@ def normalize_font_family(font_family: str | None) -> str | None:
     return normalized_font_family or None
 
 
+def list_available_font_families() -> tuple[str, ...]:
+    available_fonts = {font.name.strip() for font in font_manager.fontManager.ttflist if font.name.strip()}
+    ordered_preferred_fonts = [font_name for font_name in FONT_CANDIDATES if font_name in available_fonts]
+    remaining_fonts = sorted(available_fonts - set(ordered_preferred_fonts), key=str.casefold)
+    return tuple(ordered_preferred_fonts + remaining_fonts)
+
+
 def resolve_visible_range_seconds(
     data: HWiNFOData,
     visible_range_seconds: tuple[float, float] | None,
