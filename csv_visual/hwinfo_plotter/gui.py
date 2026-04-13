@@ -195,6 +195,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.control_scroll_canvas.configure(yscrollcommand=control_scrollbar.set)
 
         control_panel = ttk.Frame(self.control_scroll_canvas, padding=(0, 0, 12, 0))
+        self.control_panel = control_panel
         control_panel.columnconfigure(0, weight=1)
         self.control_window_id = self.control_scroll_canvas.create_window((0, 0), window=control_panel, anchor="nw")
         control_panel.bind("<Configure>", self._on_control_host_configure)
@@ -444,6 +445,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor="w", padding=(10, 6))
         status_bar.grid(row=2, column=0, sticky="ew")
+        self._bind_mousewheel_events()
 
     def _find_default_csv(self) -> str:
         for pattern in ("*.csv", "*.CSV"):
@@ -454,6 +456,63 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _on_filter_changed(self, *_args) -> None:
         self.refresh_column_list()
+
+    def _bind_mousewheel_events(self) -> None:
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.bind_all(sequence, self._on_mousewheel, add="+")
+
+    def _on_mousewheel(self, event) -> str | None:
+        units = self._get_mousewheel_units(event)
+        if units == 0:
+            return None
+
+        horizontal = bool(getattr(event, "state", 0) & 0x0001)
+        scroll_command = self._resolve_mousewheel_scroll_command(event.widget, horizontal=horizontal)
+        if scroll_command is None and horizontal:
+            scroll_command = self._resolve_mousewheel_scroll_command(event.widget, horizontal=False)
+        if scroll_command is None:
+            return None
+
+        scroll_command(units, "units")
+        return "break"
+
+    @staticmethod
+    def _get_mousewheel_units(event) -> int:
+        delta = getattr(event, "delta", 0)
+        if delta:
+            direction = -1 if delta > 0 else 1
+            magnitude = max(1, abs(int(delta)) // 120)
+            return direction * magnitude
+
+        event_num = getattr(event, "num", None)
+        if event_num == 4:
+            return -1
+        if event_num == 5:
+            return 1
+        return 0
+
+    def _resolve_mousewheel_scroll_command(self, widget, *, horizontal: bool):
+        if widget is self.column_listbox:
+            return None if horizontal else self.column_listbox.yview_scroll
+        if widget is self.selected_series_listbox:
+            return None if horizontal else self.selected_series_listbox.yview_scroll
+
+        if self._widget_is_descendant_of(widget, self.preview_host) or widget is self.preview_scroll_canvas:
+            return self.preview_scroll_canvas.xview_scroll if horizontal else self.preview_scroll_canvas.yview_scroll
+
+        if self._widget_is_descendant_of(widget, self.control_panel) or widget is self.control_scroll_canvas:
+            return None if horizontal else self.control_scroll_canvas.yview_scroll
+
+        return None
+
+    @staticmethod
+    def _widget_is_descendant_of(widget, ancestor) -> bool:
+        current_widget = widget
+        while current_widget is not None:
+            if current_widget is ancestor:
+                return True
+            current_widget = getattr(current_widget, "master", None)
+        return False
 
     def _on_chart_option_changed(self, *_args) -> None:
         self.schedule_preview_refresh()

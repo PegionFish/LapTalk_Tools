@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from hwinfo_plotter.core import HWiNFOData, SensorColumn
@@ -36,6 +37,32 @@ class GuiBehaviorTests(unittest.TestCase):
 
             self.assertGreaterEqual(app.column_listbox.winfo_height(), 120)
             self.assertGreater(app.control_scroll_canvas.winfo_height(), 0)
+        finally:
+            app.on_close()
+
+    def test_mousewheel_scrolls_control_panel_from_content_area(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            event = SimpleNamespace(widget=app.control_panel, delta=-120, num=None, state=0)
+
+            with patch.object(app.control_scroll_canvas, "yview_scroll") as mock_scroll:
+                result = app._on_mousewheel(event)
+
+            mock_scroll.assert_called_once_with(1, "units")
+            self.assertEqual(result, "break")
+        finally:
+            app.on_close()
+
+    def test_mousewheel_scrolls_parameter_list_without_hovering_scrollbar(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            event = SimpleNamespace(widget=app.column_listbox, delta=-120, num=None, state=0)
+
+            with patch.object(app.column_listbox, "yview_scroll") as mock_scroll:
+                result = app._on_mousewheel(event)
+
+            mock_scroll.assert_called_once_with(1, "units")
+            self.assertEqual(result, "break")
         finally:
             app.on_close()
 
