@@ -73,6 +73,7 @@ class SensorColumn:
 class ChartStyle:
     title: str | None = None
     line_width: float = 1.8
+    curve_only_mode: bool = False
     show_grid: bool = True
     grid_alpha: float = 0.28
     show_legend: bool = True
@@ -306,15 +307,17 @@ def build_figure(
     if plotted_line_count == 0:
         raise ValueError("所选参数没有可用于绘图的数值数据。")
 
-    if chart_style.show_grid:
+    if chart_style.curve_only_mode:
+        axis.grid(False)
+    elif chart_style.show_grid:
         axis.grid(True, linestyle="--", linewidth=0.8, alpha=chart_style.grid_alpha)
     else:
         axis.grid(False)
 
-    if chart_style.title:
+    if chart_style.title and not chart_style.curve_only_mode:
         axis.set_title(chart_style.title)
 
-    if chart_style.show_legend and plotted_line_count > 1:
+    if chart_style.show_legend and plotted_line_count > 1 and not chart_style.curve_only_mode:
         axis.legend(frameon=False, fontsize=9, loc=chart_style.legend_location)
 
     configure_axis_visibility(axis, chart_style)
@@ -582,6 +585,10 @@ def configure_time_axis(axis, start_seconds: float, end_seconds: float, chart_st
 
 
 def configure_axis_visibility(axis, chart_style: ChartStyle) -> None:
+    if chart_style.curve_only_mode:
+        configure_curve_only_mode(axis)
+        return
+
     axis.tick_params(
         axis="x",
         which="both",
@@ -592,6 +599,23 @@ def configure_axis_visibility(axis, chart_style: ChartStyle) -> None:
         which="both",
         labelleft=chart_style.show_value_axis,
     )
+    axis.xaxis.get_offset_text().set_visible(False)
+    axis.yaxis.get_offset_text().set_visible(False)
+
+
+def configure_curve_only_mode(axis) -> None:
+    axis.tick_params(
+        axis="both",
+        which="both",
+        bottom=False,
+        top=False,
+        left=False,
+        right=False,
+        labelbottom=False,
+        labelleft=False,
+    )
+    for spine in axis.spines.values():
+        spine.set_visible(False)
     axis.xaxis.get_offset_text().set_visible(False)
     axis.yaxis.get_offset_text().set_visible(False)
 

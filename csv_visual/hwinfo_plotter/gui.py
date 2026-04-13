@@ -144,6 +144,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self.trim_end_label_var = tk.StringVar(value="00:00:00")
         self.trim_duration_label_var = tk.StringVar(value="可视化范围：00:00:00 → 00:00:00")
         self._updating_trim_controls = False
+        self._updating_curve_only_mode = False
+        self.curve_only_mode_var = tk.BooleanVar(value=False)
         self.show_grid_var = tk.BooleanVar(value=True)
         self.show_legend_var = tk.BooleanVar(value=True)
         self.show_time_axis_var = tk.BooleanVar(value=True)
@@ -161,13 +163,17 @@ class HWiNFOPlotterApp(tk.Tk):
             self.line_width_var,
             self.fixed_time_interval_var,
             self.fixed_time_interval_unit_var,
+            self.legend_location_var,
+        ):
+            option_var.trace_add("write", self._on_chart_option_changed)
+        for option_var in (
             self.show_grid_var,
             self.show_legend_var,
             self.show_time_axis_var,
             self.show_value_axis_var,
-            self.legend_location_var,
         ):
-            option_var.trace_add("write", self._on_chart_option_changed)
+            option_var.trace_add("write", self._on_standard_chart_element_changed)
+        self.curve_only_mode_var.trace_add("write", self._on_curve_only_mode_changed)
         self.time_density_var.trace_add("write", self._on_time_density_changed)
         self.trim_start_var.trace_add("write", self._on_trim_start_changed)
         self.trim_end_var.trace_add("write", self._on_trim_end_changed)
@@ -313,7 +319,7 @@ class HWiNFOPlotterApp(tk.Tk):
             sticky="w",
             pady=(8, 0),
         )
-        ttk.Checkbutton(options_frame, text="显示图例（关=仅线条）", variable=self.show_legend_var).grid(
+        ttk.Checkbutton(options_frame, text="显示图例", variable=self.show_legend_var).grid(
             row=5,
             column=2,
             columnspan=2,
@@ -336,7 +342,15 @@ class HWiNFOPlotterApp(tk.Tk):
             pady=(8, 0),
         )
 
-        ttk.Label(options_frame, text="图例位置").grid(row=7, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Checkbutton(options_frame, text="纯曲线模式", variable=self.curve_only_mode_var).grid(
+            row=7,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="图例位置").grid(row=8, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         legend_location_box = ttk.Combobox(
             options_frame,
             textvariable=self.legend_location_var,
@@ -344,7 +358,7 @@ class HWiNFOPlotterApp(tk.Tk):
             state="readonly",
             width=10,
         )
-        legend_location_box.grid(row=7, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        legend_location_box.grid(row=8, column=1, columnspan=3, sticky="ew", pady=(8, 0))
 
         trim_frame = ttk.Labelframe(control_panel, text="可视化范围", padding=12)
         trim_frame.grid(row=6, column=0, sticky="ew", pady=(12, 0))
@@ -527,6 +541,37 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _on_chart_option_changed(self, *_args) -> None:
         self.schedule_preview_refresh()
+
+    def _on_standard_chart_element_changed(self, *_args) -> None:
+        if not self._updating_curve_only_mode and self.curve_only_mode_var.get() and self.has_enabled_chart_elements():
+            self._updating_curve_only_mode = True
+            try:
+                self.curve_only_mode_var.set(False)
+            finally:
+                self._updating_curve_only_mode = False
+
+        self.schedule_preview_refresh()
+
+    def _on_curve_only_mode_changed(self, *_args) -> None:
+        if self.curve_only_mode_var.get() and not self._updating_curve_only_mode:
+            self._updating_curve_only_mode = True
+            try:
+                self.show_grid_var.set(False)
+                self.show_legend_var.set(False)
+                self.show_time_axis_var.set(False)
+                self.show_value_axis_var.set(False)
+            finally:
+                self._updating_curve_only_mode = False
+
+        self.schedule_preview_refresh()
+
+    def has_enabled_chart_elements(self) -> bool:
+        return (
+            self.show_grid_var.get()
+            or self.show_legend_var.get()
+            or self.show_time_axis_var.get()
+            or self.show_value_axis_var.get()
+        )
 
     def _on_time_density_changed(self, *_args) -> None:
         self.update_time_density_label()
@@ -809,6 +854,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_density_var.set(DEFAULT_TIME_TICK_DENSITY)
         self.fixed_time_interval_var.set("")
         self.fixed_time_interval_unit_var.set("自动")
+        self.curve_only_mode_var.set(False)
         self.show_grid_var.set(True)
         self.show_legend_var.set(True)
         self.show_time_axis_var.set(True)
@@ -945,6 +991,7 @@ class HWiNFOPlotterApp(tk.Tk):
         style = ChartStyle(
             title=self.title_var.get().strip() or None,
             line_width=line_width,
+            curve_only_mode=self.curve_only_mode_var.get(),
             show_grid=self.show_grid_var.get(),
             show_legend=self.show_legend_var.get(),
             show_time_axis=self.show_time_axis_var.get(),

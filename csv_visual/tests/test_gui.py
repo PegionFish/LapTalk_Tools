@@ -124,6 +124,38 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_curve_only_mode_is_exclusive_with_chart_element_toggles(self) -> None:
+        data = build_synthetic_data()
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.data = data
+            app.selected_column_indices = {2, 3}
+
+            app.curve_only_mode_var.set(True)
+
+            self.assertTrue(app.curve_only_mode_var.get())
+            self.assertFalse(app.show_grid_var.get())
+            self.assertFalse(app.show_legend_var.get())
+            self.assertFalse(app.show_time_axis_var.get())
+            self.assertFalse(app.show_value_axis_var.get())
+
+            preview_request = app.build_preview_request()
+
+            self.assertTrue(preview_request.style.curve_only_mode)
+            self.assertFalse(preview_request.style.show_grid)
+            self.assertFalse(preview_request.style.show_legend)
+            self.assertFalse(preview_request.style.show_time_axis)
+            self.assertFalse(preview_request.style.show_value_axis)
+
+            app.show_grid_var.set(True)
+
+            self.assertFalse(app.curve_only_mode_var.get())
+            self.assertTrue(app.show_grid_var.get())
+        finally:
+            app.on_close()
+
     def test_show_preview_image_replaces_placeholder_with_png(self) -> None:
         app = HWiNFOPlotterApp()
         try:

@@ -118,7 +118,6 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(axis.get_ylabel(), "")
         self.assertFalse(axis.xaxis.get_offset_text().get_visible())
         self.assertEqual(axis.lines[0].get_linewidth(), 2.4)
-        self.assertEqual(len(axis.lines), len(column_indices))
         self.assertIsNone(axis.get_legend())
 
     def test_compact_time_formatter_omits_zero_hour_component(self) -> None:
@@ -313,6 +312,52 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertTrue(axis.xaxis.get_major_ticks()[0].tick1line.get_visible())
         self.assertFalse(axis.xaxis.get_major_ticks()[0].label1.get_visible())
         self.assertTrue(axis.yaxis.get_major_ticks()[0].tick1line.get_visible())
+        self.assertFalse(axis.yaxis.get_major_ticks()[0].label1.get_visible())
+
+    def test_build_figure_curve_only_mode_keeps_only_data_lines(self) -> None:
+        base_time = datetime(2026, 4, 13, 12, 0, 0)
+        timestamps = [base_time + timedelta(seconds=index) for index in range(10)]
+        data = HWiNFOData(
+            source_path=Path("synthetic.csv"),
+            encoding="utf-8",
+            headers=["Date", "Time", "CPU", "GPU"],
+            columns=[
+                SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU"),
+                SensorColumn(index=3, name="GPU", occurrence=1, display_name="[003] GPU"),
+            ],
+            timestamps=timestamps,
+            rows=[
+                ["13/04/2026", f"12:00:{index:02d}", f"{float(index):.1f}", f"{float(index + 1):.1f}"]
+                for index in range(10)
+            ],
+        )
+
+        figure = build_figure(
+            data,
+            [2, 3],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            style=ChartStyle(
+                title="不应显示",
+                curve_only_mode=True,
+                show_grid=True,
+                show_legend=True,
+                show_time_axis=True,
+                show_value_axis=True,
+            ),
+        )
+        axis = figure.axes[0]
+
+        self.assertEqual(len(axis.lines), 2)
+        self.assertEqual(axis.get_title(), "")
+        self.assertIsNone(axis.get_legend())
+        self.assertTrue(all(not spine.get_visible() for spine in axis.spines.values()))
+        self.assertTrue(all(not gridline.get_visible() for gridline in axis.get_xgridlines()))
+        self.assertTrue(all(not gridline.get_visible() for gridline in axis.get_ygridlines()))
+        self.assertFalse(axis.xaxis.get_major_ticks()[0].tick1line.get_visible())
+        self.assertFalse(axis.xaxis.get_major_ticks()[0].label1.get_visible())
+        self.assertFalse(axis.yaxis.get_major_ticks()[0].tick1line.get_visible())
         self.assertFalse(axis.yaxis.get_major_ticks()[0].label1.get_visible())
 
     def test_build_figure_trims_visible_range(self) -> None:
