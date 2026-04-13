@@ -12,6 +12,7 @@ from hwinfo_plotter.core import (
     build_figure,
     choose_best_decoding,
     decode_csv_bytes,
+    format_compact_elapsed_time,
     load_hwinfo_csv,
     parse_numeric_value,
     render_figure_png_bytes,
@@ -118,6 +119,10 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertFalse(axis.xaxis.get_offset_text().get_visible())
         self.assertEqual(axis.lines[0].get_linewidth(), 2.4)
         self.assertIsNone(axis.get_legend())
+
+    def test_compact_time_formatter_omits_zero_hour_component(self) -> None:
+        self.assertEqual(format_compact_elapsed_time(65), "01:05")
+        self.assertEqual(format_compact_elapsed_time(3605), "01:00:05")
 
     def test_decodes_utf8_bom_chinese_headers(self) -> None:
         raw_bytes = 'Date,Time,"提交虚拟内存 [MB]"\n'.encode("utf-8-sig")
@@ -271,6 +276,43 @@ class CoreSmokeTests(unittest.TestCase):
         interval_seconds = resolve_tick_interval_seconds(703.705, 7)
 
         self.assertEqual(interval_seconds, 60)
+
+    def test_build_figure_can_hide_time_and_value_axes(self) -> None:
+        base_time = datetime(2026, 4, 13, 12, 0, 0)
+        timestamps = [base_time + timedelta(seconds=index) for index in range(10)]
+        data = HWiNFOData(
+            source_path=Path("synthetic.csv"),
+            encoding="utf-8",
+            headers=["Date", "Time", "CPU"],
+            columns=[SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU")],
+            timestamps=timestamps,
+            rows=[
+                ["13/04/2026", f"12:00:{index:02d}", f"{float(index):.1f}"]
+                for index in range(10)
+            ],
+        )
+
+        figure = build_figure(
+            data,
+            [2],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            style=ChartStyle(
+                show_time_axis=False,
+                show_value_axis=False,
+            ),
+        )
+        axis = figure.axes[0]
+
+        self.assertFalse(axis.spines["bottom"].get_visible())
+        self.assertFalse(axis.spines["left"].get_visible())
+        self.assertFalse(axis.spines["top"].get_visible())
+        self.assertFalse(axis.spines["right"].get_visible())
+        self.assertFalse(axis.xaxis.get_major_ticks()[0].tick1line.get_visible())
+        self.assertFalse(axis.xaxis.get_major_ticks()[0].label1.get_visible())
+        self.assertFalse(axis.yaxis.get_major_ticks()[0].tick1line.get_visible())
+        self.assertFalse(axis.yaxis.get_major_ticks()[0].label1.get_visible())
 
     def test_build_figure_trims_visible_range(self) -> None:
         base_time = datetime(2026, 4, 13, 12, 0, 0)

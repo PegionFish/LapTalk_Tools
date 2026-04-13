@@ -76,6 +76,8 @@ class ChartStyle:
     show_grid: bool = True
     grid_alpha: float = 0.28
     show_legend: bool = True
+    show_time_axis: bool = True
+    show_value_axis: bool = True
     legend_location: str = "best"
     time_tick_density: int = DEFAULT_TIME_TICK_DENSITY
     fixed_time_interval_seconds: int | None = None
@@ -314,6 +316,8 @@ def build_figure(
 
     if chart_style.show_legend and plotted_line_count > 1:
         axis.legend(frameon=False, fontsize=9, loc=chart_style.legend_location)
+
+    configure_axis_visibility(axis, chart_style)
 
     return figure
 
@@ -570,11 +574,34 @@ def trim_series_to_range(
 
 def configure_time_axis(axis, start_seconds: float, end_seconds: float, chart_style: ChartStyle) -> None:
     locator = build_time_locator(start_seconds, end_seconds, chart_style)
-    formatter = FuncFormatter(format_elapsed_time)
+    formatter = FuncFormatter(format_compact_elapsed_time)
     axis.xaxis.set_major_locator(locator)
     axis.xaxis.set_major_formatter(formatter)
     axis.xaxis.get_offset_text().set_visible(False)
     axis.set_xlim(start_seconds, end_seconds)
+
+
+def configure_axis_visibility(axis, chart_style: ChartStyle) -> None:
+    axis.tick_params(
+        axis="x",
+        which="both",
+        bottom=chart_style.show_time_axis,
+        labelbottom=chart_style.show_time_axis,
+    )
+    axis.tick_params(
+        axis="y",
+        which="both",
+        left=chart_style.show_value_axis,
+        labelleft=chart_style.show_value_axis,
+    )
+    axis.spines["bottom"].set_visible(chart_style.show_time_axis)
+    axis.spines["left"].set_visible(chart_style.show_value_axis)
+
+    frame_visible = chart_style.show_time_axis or chart_style.show_value_axis
+    axis.spines["top"].set_visible(frame_visible)
+    axis.spines["right"].set_visible(frame_visible)
+    axis.xaxis.get_offset_text().set_visible(False)
+    axis.yaxis.get_offset_text().set_visible(False)
 
 
 def build_time_locator(start_seconds: float, end_seconds: float, chart_style: ChartStyle):
@@ -586,11 +613,17 @@ def build_time_locator(start_seconds: float, end_seconds: float, chart_style: Ch
     return MultipleLocator(interval_seconds)
 
 
-def format_elapsed_time(value: float, _position=None) -> str:
+def format_elapsed_time(value: float, _position=None, *, omit_zero_hours: bool = False) -> str:
     total_seconds = max(0, int(round(value)))
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
+    if omit_zero_hours and hours == 0:
+        return f"{minutes:02d}:{seconds:02d}"
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def format_compact_elapsed_time(value: float, position=None) -> str:
+    return format_elapsed_time(value, position, omit_zero_hours=True)
 
 
 def resolve_tick_interval_seconds(span_seconds: float, time_tick_density: int) -> int:

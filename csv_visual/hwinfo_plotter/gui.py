@@ -146,6 +146,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self._updating_trim_controls = False
         self.show_grid_var = tk.BooleanVar(value=True)
         self.show_legend_var = tk.BooleanVar(value=True)
+        self.show_time_axis_var = tk.BooleanVar(value=True)
+        self.show_value_axis_var = tk.BooleanVar(value=True)
         self.legend_location_var = tk.StringVar(value="自动")
         self.selection_var = tk.StringVar(value="当前未选择参数")
         self.status_var = tk.StringVar(value="请选择一个 HWiNFO CSV 文件。")
@@ -161,6 +163,8 @@ class HWiNFOPlotterApp(tk.Tk):
             self.fixed_time_interval_unit_var,
             self.show_grid_var,
             self.show_legend_var,
+            self.show_time_axis_var,
+            self.show_value_axis_var,
             self.legend_location_var,
         ):
             option_var.trace_add("write", self._on_chart_option_changed)
@@ -317,7 +321,22 @@ class HWiNFOPlotterApp(tk.Tk):
             pady=(8, 0),
         )
 
-        ttk.Label(options_frame, text="图例位置").grid(row=6, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Checkbutton(options_frame, text="显示时间轴", variable=self.show_time_axis_var).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+        ttk.Checkbutton(options_frame, text="显示数值轴", variable=self.show_value_axis_var).grid(
+            row=6,
+            column=2,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="图例位置").grid(row=7, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         legend_location_box = ttk.Combobox(
             options_frame,
             textvariable=self.legend_location_var,
@@ -325,7 +344,7 @@ class HWiNFOPlotterApp(tk.Tk):
             state="readonly",
             width=10,
         )
-        legend_location_box.grid(row=6, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        legend_location_box.grid(row=7, column=1, columnspan=3, sticky="ew", pady=(8, 0))
 
         trim_frame = ttk.Labelframe(control_panel, text="可视化范围", padding=12)
         trim_frame.grid(row=6, column=0, sticky="ew", pady=(12, 0))
@@ -792,6 +811,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self.fixed_time_interval_unit_var.set("自动")
         self.show_grid_var.set(True)
         self.show_legend_var.set(True)
+        self.show_time_axis_var.set(True)
+        self.show_value_axis_var.set(True)
         self.legend_location_var.set("自动")
         self.status_var.set("图表样式已重置。")
         self.schedule_preview_refresh()
@@ -926,6 +947,8 @@ class HWiNFOPlotterApp(tk.Tk):
             line_width=line_width,
             show_grid=self.show_grid_var.get(),
             show_legend=self.show_legend_var.get(),
+            show_time_axis=self.show_time_axis_var.get(),
+            show_value_axis=self.show_value_axis_var.get(),
             legend_location=LEGEND_LOCATION_CHOICES.get(self.legend_location_var.get(), "best"),
             time_tick_density=self.parse_time_tick_density(),
             fixed_time_interval_seconds=self.parse_fixed_time_interval_seconds(),

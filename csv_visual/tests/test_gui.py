@@ -106,6 +106,8 @@ class GuiBehaviorTests(unittest.TestCase):
             app.fixed_time_interval_unit_var.set("分钟")
             app.trim_start_var.set(1)
             app.trim_end_var.set(2)
+            app.show_time_axis_var.set(False)
+            app.show_value_axis_var.set(False)
 
             preview_request = app.build_preview_request()
 
@@ -116,6 +118,8 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.style.title, "预览测试")
             self.assertEqual(preview_request.style.time_tick_density, 10)
             self.assertEqual(preview_request.style.fixed_time_interval_seconds, 120)
+            self.assertFalse(preview_request.style.show_time_axis)
+            self.assertFalse(preview_request.style.show_value_axis)
             self.assertEqual(preview_request.visible_range_seconds, (1.0, 2.0))
         finally:
             app.on_close()
