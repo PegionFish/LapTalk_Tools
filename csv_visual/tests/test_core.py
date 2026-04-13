@@ -15,6 +15,7 @@ from hwinfo_plotter.core import (
     load_hwinfo_csv,
     parse_numeric_value,
     render_figure_png_bytes,
+    resolve_tick_interval_seconds,
     save_figure,
 )
 
@@ -265,6 +266,11 @@ class CoreSmokeTests(unittest.TestCase):
 
         self.assertTrue(minute_diffs)
         self.assertTrue(all(abs(diff - 2) < 1e-6 for diff in minute_diffs))
+
+    def test_auto_time_tick_interval_avoids_overcrowded_short_ranges(self) -> None:
+        interval_seconds = resolve_tick_interval_seconds(703.705, 7)
+
+        self.assertEqual(interval_seconds, 60)
 
     def test_build_figure_trims_visible_range(self) -> None:
         base_time = datetime(2026, 4, 13, 12, 0, 0)

@@ -620,10 +620,10 @@ def resolve_tick_interval_seconds(span_seconds: float, time_tick_density: int) -
         21600,
         43200,
     ]
-    return min(
-        candidate_intervals,
-        key=lambda interval_seconds: abs(interval_seconds - ideal_interval_seconds),
-    )
+    for interval_seconds in candidate_intervals:
+        if interval_seconds >= ideal_interval_seconds:
+            return interval_seconds
+    return candidate_intervals[-1]
 
 
 def build_fixed_interval_locator(fixed_time_interval_seconds: int):
