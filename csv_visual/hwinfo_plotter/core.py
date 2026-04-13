@@ -585,21 +585,13 @@ def configure_axis_visibility(axis, chart_style: ChartStyle) -> None:
     axis.tick_params(
         axis="x",
         which="both",
-        bottom=chart_style.show_time_axis,
         labelbottom=chart_style.show_time_axis,
     )
     axis.tick_params(
         axis="y",
         which="both",
-        left=chart_style.show_value_axis,
         labelleft=chart_style.show_value_axis,
     )
-    axis.spines["bottom"].set_visible(chart_style.show_time_axis)
-    axis.spines["left"].set_visible(chart_style.show_value_axis)
-
-    frame_visible = chart_style.show_time_axis or chart_style.show_value_axis
-    axis.spines["top"].set_visible(frame_visible)
-    axis.spines["right"].set_visible(frame_visible)
     axis.xaxis.get_offset_text().set_visible(False)
     axis.yaxis.get_offset_text().set_visible(False)
 

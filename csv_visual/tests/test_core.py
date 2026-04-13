@@ -277,7 +277,7 @@ class CoreSmokeTests(unittest.TestCase):
 
         self.assertEqual(interval_seconds, 60)
 
-    def test_build_figure_can_hide_time_and_value_axes(self) -> None:
+    def test_build_figure_can_hide_time_and_value_axis_text(self) -> None:
         base_time = datetime(2026, 4, 13, 12, 0, 0)
         timestamps = [base_time + timedelta(seconds=index) for index in range(10)]
         data = HWiNFOData(
@@ -305,13 +305,13 @@ class CoreSmokeTests(unittest.TestCase):
         )
         axis = figure.axes[0]
 
-        self.assertFalse(axis.spines["bottom"].get_visible())
-        self.assertFalse(axis.spines["left"].get_visible())
-        self.assertFalse(axis.spines["top"].get_visible())
-        self.assertFalse(axis.spines["right"].get_visible())
-        self.assertFalse(axis.xaxis.get_major_ticks()[0].tick1line.get_visible())
+        self.assertTrue(axis.spines["bottom"].get_visible())
+        self.assertTrue(axis.spines["left"].get_visible())
+        self.assertTrue(axis.spines["top"].get_visible())
+        self.assertTrue(axis.spines["right"].get_visible())
+        self.assertTrue(axis.xaxis.get_major_ticks()[0].tick1line.get_visible())
         self.assertFalse(axis.xaxis.get_major_ticks()[0].label1.get_visible())
-        self.assertFalse(axis.yaxis.get_major_ticks()[0].tick1line.get_visible())
+        self.assertTrue(axis.yaxis.get_major_ticks()[0].tick1line.get_visible())
         self.assertFalse(axis.yaxis.get_major_ticks()[0].label1.get_visible())
 
     def test_build_figure_trims_visible_range(self) -> None:

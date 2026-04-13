@@ -321,14 +321,14 @@ class HWiNFOPlotterApp(tk.Tk):
             pady=(8, 0),
         )
 
-        ttk.Checkbutton(options_frame, text="显示时间轴", variable=self.show_time_axis_var).grid(
+        ttk.Checkbutton(options_frame, text="显示时间文字", variable=self.show_time_axis_var).grid(
             row=6,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
-        ttk.Checkbutton(options_frame, text="显示数值轴", variable=self.show_value_axis_var).grid(
+        ttk.Checkbutton(options_frame, text="显示数值文字", variable=self.show_value_axis_var).grid(
             row=6,
             column=2,
             columnspan=2,
