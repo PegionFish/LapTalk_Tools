@@ -3,9 +3,10 @@ from __future__ import annotations
 import codecs
 import csv
 import io
+import math
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
@@ -86,14 +87,23 @@ class HWiNFOData:
     timestamps: list[datetime]
     rows: list[list[str]]
     skipped_rows: int = 0
+    _column_map: dict[int, SensorColumn] = field(default_factory=dict, init=False, repr=False)
+    _series_cache: dict[int, tuple[list[datetime], list[float]]] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._column_map = {column.index: column for column in self.columns}
 
     def column_for_index(self, column_index: int) -> SensorColumn:
-        for column in self.columns:
-            if column.index == column_index:
-                return column
-        raise KeyError(f"未找到列索引 {column_index}")
+        try:
+            return self._column_map[column_index]
+        except KeyError as exc:
+            raise KeyError(f"未找到列索引 {column_index}") from exc
 
     def extract_series(self, column_index: int) -> tuple[list[datetime], list[float]]:
+        cached_series = self._series_cache.get(column_index)
+        if cached_series is not None:
+            return cached_series
+
         x_values: list[datetime] = []
         y_values: list[float] = []
 
@@ -108,7 +118,9 @@ class HWiNFOData:
             x_values.append(timestamp)
             y_values.append(numeric_value)
 
-        return x_values, y_values
+        series = (x_values, y_values)
+        self._series_cache[column_index] = series
+        return series
 
 
 def load_hwinfo_csv(path: Path | str) -> HWiNFOData:
@@ -172,6 +184,7 @@ def build_figure(
     height_px: int = 1080,
     dpi: int = 160,
     style: ChartStyle | None = None,
+    max_points_per_series: int | None = None,
 ) -> Figure:
     if not column_indices:
         raise ValueError("至少需要选择一个参数。")
@@ -179,6 +192,8 @@ def build_figure(
         raise ValueError("输出尺寸过小，请至少使用 200 x 200。")
     if dpi < 72:
         raise ValueError("DPI 不能小于 72。")
+    if max_points_per_series is not None and max_points_per_series < 2:
+        raise ValueError("每条曲线的最大点数不能小于 2。")
 
     chart_style = resolve_chart_style(style, title=title)
     if chart_style.line_width <= 0:
@@ -209,10 +224,11 @@ def build_figure(
         x_values, y_values = data.extract_series(column_index)
         if not y_values:
             continue
+        plot_x_values, plot_y_values = downsample_series(x_values, y_values, max_points=max_points_per_series)
 
         axis.plot(
-            x_values,
-            y_values,
+            plot_x_values,
+            plot_y_values,
             linewidth=chart_style.line_width,
             label=sensor_column.display_name,
         )
@@ -432,6 +448,25 @@ def resolve_chart_style(style: ChartStyle | None, title: str | None = None) -> C
     if title is not None and not style.title:
         return replace(style, title=title)
     return style
+
+
+def downsample_series(
+    x_values: Sequence[datetime],
+    y_values: Sequence[float],
+    max_points: int | None = None,
+) -> tuple[Sequence[datetime], Sequence[float]]:
+    if max_points is None or len(x_values) <= max_points:
+        return x_values, y_values
+
+    step = max(1, math.ceil(len(x_values) / max_points))
+    sampled_x = list(x_values[::step])
+    sampled_y = list(y_values[::step])
+
+    if sampled_x[-1] != x_values[-1]:
+        sampled_x.append(x_values[-1])
+        sampled_y.append(y_values[-1])
+
+    return sampled_x, sampled_y
 
 
 def configure_matplotlib_fonts() -> None:

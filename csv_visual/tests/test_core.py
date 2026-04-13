@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
-from hwinfo_plotter.core import ChartStyle, build_figure, choose_best_decoding, decode_csv_bytes, load_hwinfo_csv, save_figure
+from hwinfo_plotter.core import (
+    ChartStyle,
+    HWiNFOData,
+    SensorColumn,
+    build_figure,
+    choose_best_decoding,
+    decode_csv_bytes,
+    load_hwinfo_csv,
+    parse_numeric_value,
+    save_figure,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +109,56 @@ class CoreSmokeTests(unittest.TestCase):
 
         self.assertEqual(encoding, "gb18030")
         self.assertEqual(text, readable_text)
+
+    def test_extract_series_uses_cache(self) -> None:
+        base_time = datetime(2026, 4, 13, 12, 0, 0)
+        data = HWiNFOData(
+            source_path=Path("synthetic.csv"),
+            encoding="utf-8",
+            headers=["Date", "Time", "CPU"],
+            columns=[SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU")],
+            timestamps=[base_time + timedelta(seconds=index) for index in range(3)],
+            rows=[
+                ["13/04/2026", "12:00:00", "1.0"],
+                ["13/04/2026", "12:00:01", "2.0"],
+                ["13/04/2026", "12:00:02", "3.0"],
+            ],
+        )
+
+        with patch("hwinfo_plotter.core.parse_numeric_value", wraps=parse_numeric_value) as mock_parse:
+            first_series = data.extract_series(2)
+            second_series = data.extract_series(2)
+
+        self.assertIs(first_series, second_series)
+        self.assertEqual(mock_parse.call_count, 3)
+
+    def test_build_figure_can_downsample_large_series(self) -> None:
+        base_time = datetime(2026, 4, 13, 12, 0, 0)
+        timestamps = [base_time + timedelta(seconds=index) for index in range(20)]
+        data = HWiNFOData(
+            source_path=Path("synthetic.csv"),
+            encoding="utf-8",
+            headers=["Date", "Time", "CPU"],
+            columns=[SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU")],
+            timestamps=timestamps,
+            rows=[
+                ["13/04/2026", f"12:00:{index:02d}", f"{float(index):.1f}"]
+                for index in range(20)
+            ],
+        )
+
+        figure = build_figure(
+            data,
+            [2],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            max_points_per_series=5,
+        )
+        axis = figure.axes[0]
+
+        self.assertLessEqual(len(axis.lines[0].get_xdata()), 6)
+        self.assertEqual(axis.lines[0].get_ydata()[-1], 19.0)
 
 
 if __name__ == "__main__":

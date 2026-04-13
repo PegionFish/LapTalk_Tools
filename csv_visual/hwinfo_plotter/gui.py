@@ -18,6 +18,10 @@ LEGEND_LOCATION_CHOICES = {
     "上方居中": "upper center",
     "下方居中": "lower center",
 }
+PREVIEW_DEFAULT_WIDTH = 1280
+PREVIEW_DEFAULT_HEIGHT = 720
+PREVIEW_MAX_DPI = 100
+PREVIEW_MAX_POINTS_PER_SERIES = 3000
 
 
 class HWiNFOPlotterApp(tk.Tk):
@@ -343,7 +347,7 @@ class HWiNFOPlotterApp(tk.Tk):
             return
 
         try:
-            figure = self.build_current_figure()
+            figure = self.build_current_figure(preview=True)
         except Exception as exc:
             self.status_var.set(f"自动预览未更新：{exc}")
             return
@@ -372,7 +376,7 @@ class HWiNFOPlotterApp(tk.Tk):
             return
 
         try:
-            figure = self.build_current_figure()
+            figure = self.build_current_figure(preview=False)
             destination = save_figure(figure, output_path)
         except Exception as exc:
             messagebox.showerror("导出失败", str(exc))
@@ -380,7 +384,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.status_var.set(f"已导出透明 PNG：{destination}")
 
-    def build_current_figure(self):
+    def build_current_figure(self, *, preview: bool = False):
         if not self.data:
             raise ValueError("请先加载一个 CSV 文件。")
 
@@ -401,6 +405,10 @@ class HWiNFOPlotterApp(tk.Tk):
             show_legend=self.show_legend_var.get(),
             legend_location=LEGEND_LOCATION_CHOICES.get(self.legend_location_var.get(), "best"),
         )
+        max_points_per_series = None
+        if preview:
+            width_px, height_px, dpi = self.get_preview_render_options(width_px, height_px, dpi)
+            max_points_per_series = PREVIEW_MAX_POINTS_PER_SERIES
 
         return build_figure(
             self.data,
@@ -409,7 +417,27 @@ class HWiNFOPlotterApp(tk.Tk):
             height_px=height_px,
             dpi=dpi,
             style=style,
+            max_points_per_series=max_points_per_series,
         )
+
+    def get_preview_render_options(self, width_px: int, height_px: int, dpi: int) -> tuple[int, int, int]:
+        available_width = self.preview_host.winfo_width() - 24
+        available_height = self.preview_host.winfo_height() - 24
+
+        if available_width < 320:
+            available_width = PREVIEW_DEFAULT_WIDTH
+        if available_height < 240:
+            available_height = PREVIEW_DEFAULT_HEIGHT
+
+        scale = min(
+            1.0,
+            available_width / width_px,
+            available_height / height_px,
+        )
+        preview_width = max(320, int(width_px * scale))
+        preview_height = max(240, int(height_px * scale))
+        preview_dpi = min(dpi, PREVIEW_MAX_DPI)
+        return preview_width, preview_height, preview_dpi
 
     def get_selected_columns(self) -> list[int]:
         if not self.data:
