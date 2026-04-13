@@ -6,7 +6,18 @@ from tkinter import filedialog, messagebox, ttk
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from .core import HWiNFOData, build_default_output_name, build_figure, load_hwinfo_csv, save_figure
+from .core import ChartStyle, HWiNFOData, build_default_output_name, build_figure, load_hwinfo_csv, save_figure
+
+
+LEGEND_LOCATION_CHOICES = {
+    "自动": "best",
+    "右上": "upper right",
+    "左上": "upper left",
+    "右下": "lower right",
+    "左下": "lower left",
+    "上方居中": "upper center",
+    "下方居中": "lower center",
+}
 
 
 class HWiNFOPlotterApp(tk.Tk):
@@ -21,17 +32,37 @@ class HWiNFOPlotterApp(tk.Tk):
         self.selected_column_indices: set[int] = set()
         self.preview_canvas: FigureCanvasTkAgg | None = None
         self.preview_figure = None
+        self.preview_after_id: str | None = None
 
         self.file_var = tk.StringVar(value=self._find_default_csv())
         self.filter_var = tk.StringVar()
         self.title_var = tk.StringVar()
+        self.x_label_var = tk.StringVar(value="时间戳")
+        self.y_label_var = tk.StringVar(value="数值")
         self.width_var = tk.StringVar(value="1920")
         self.height_var = tk.StringVar(value="1080")
         self.dpi_var = tk.StringVar(value="160")
+        self.line_width_var = tk.StringVar(value="1.8")
+        self.show_grid_var = tk.BooleanVar(value=True)
+        self.show_legend_var = tk.BooleanVar(value=True)
+        self.legend_location_var = tk.StringVar(value="自动")
         self.selection_var = tk.StringVar(value="当前未选择参数")
         self.status_var = tk.StringVar(value="请选择一个 HWiNFO CSV 文件。")
 
         self.filter_var.trace_add("write", self._on_filter_changed)
+        for option_var in (
+            self.title_var,
+            self.x_label_var,
+            self.y_label_var,
+            self.width_var,
+            self.height_var,
+            self.dpi_var,
+            self.line_width_var,
+            self.show_grid_var,
+            self.show_legend_var,
+            self.legend_location_var,
+        ):
+            option_var.trace_add("write", self._on_chart_option_changed)
 
         self._build_layout()
 
@@ -94,27 +125,62 @@ class HWiNFOPlotterApp(tk.Tk):
         ttk.Button(button_row, text="全选可见项", command=self.select_all_visible).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         ttk.Button(button_row, text="清空选择", command=self.clear_selection).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        options_frame = ttk.Labelframe(control_panel, text="导出设置", padding=12)
+        options_frame = ttk.Labelframe(control_panel, text="图表设置", padding=12)
         options_frame.grid(row=5, column=0, sticky="ew")
         options_frame.columnconfigure(1, weight=1)
+        options_frame.columnconfigure(3, weight=1)
 
         ttk.Label(options_frame, text="图表标题").grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 8))
         ttk.Entry(options_frame, textvariable=self.title_var).grid(row=0, column=1, columnspan=3, sticky="ew", pady=(0, 8))
 
-        ttk.Label(options_frame, text="宽度(px)").grid(row=1, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.width_var, width=10).grid(row=1, column=1, sticky="ew")
+        ttk.Label(options_frame, text="X 轴标题").grid(row=1, column=0, sticky="w", pady=(0, 8), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.x_label_var).grid(row=1, column=1, sticky="ew", pady=(0, 8))
 
-        ttk.Label(options_frame, text="高度(px)").grid(row=1, column=2, sticky="w", padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.height_var, width=10).grid(row=1, column=3, sticky="ew")
+        ttk.Label(options_frame, text="Y 轴标题").grid(row=1, column=2, sticky="w", pady=(0, 8), padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.y_label_var).grid(row=1, column=3, sticky="ew", pady=(0, 8))
 
-        ttk.Label(options_frame, text="DPI").grid(row=2, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.dpi_var, width=10).grid(row=2, column=1, sticky="ew", pady=(8, 0))
+        ttk.Label(options_frame, text="宽度(px)").grid(row=2, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.width_var, width=10).grid(row=2, column=1, sticky="ew")
+
+        ttk.Label(options_frame, text="高度(px)").grid(row=2, column=2, sticky="w", padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.height_var, width=10).grid(row=2, column=3, sticky="ew")
+
+        ttk.Label(options_frame, text="DPI").grid(row=3, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.dpi_var, width=10).grid(row=3, column=1, sticky="ew", pady=(8, 0))
+
+        ttk.Label(options_frame, text="曲线线宽").grid(row=3, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.line_width_var, width=10).grid(row=3, column=3, sticky="ew", pady=(8, 0))
+
+        ttk.Checkbutton(options_frame, text="显示网格", variable=self.show_grid_var).grid(
+            row=4,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+        ttk.Checkbutton(options_frame, text="显示图例", variable=self.show_legend_var).grid(
+            row=4,
+            column=2,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="图例位置").grid(row=5, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        legend_location_box = ttk.Combobox(
+            options_frame,
+            textvariable=self.legend_location_var,
+            values=list(LEGEND_LOCATION_CHOICES.keys()),
+            state="readonly",
+            width=10,
+        )
+        legend_location_box.grid(row=5, column=1, columnspan=3, sticky="ew", pady=(8, 0))
 
         action_row = ttk.Frame(control_panel)
         action_row.grid(row=6, column=0, sticky="ew", pady=(12, 0))
         action_row.columnconfigure((0, 1), weight=1)
 
-        ttk.Button(action_row, text="预览图表", command=self.preview_plot).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(action_row, text="重置样式", command=self.reset_chart_options).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         ttk.Button(action_row, text="导出透明 PNG", command=self.export_png).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
         preview_frame = ttk.Labelframe(preview_panel, text="图表预览", padding=8)
@@ -129,7 +195,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.preview_placeholder = ttk.Label(
             self.preview_host,
-            text="加载 CSV 并选择参数后，点击“预览图表”。",
+            text="加载 CSV 并选择参数后，图表会自动预览。",
             anchor="center",
             justify="center",
         )
@@ -147,6 +213,9 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _on_filter_changed(self, *_args) -> None:
         self.refresh_column_list()
+
+    def _on_chart_option_changed(self, *_args) -> None:
+        self.schedule_preview_refresh()
 
     def browse_csv(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -177,8 +246,9 @@ class HWiNFOPlotterApp(tk.Tk):
         self.clear_preview()
         self.status_var.set(
             f"已加载 {self.data.source_path.name}，共 {len(self.data.timestamps)} 行有效数据，"
-            f"{len(self.data.columns)} 个可选参数，编码：{self.data.encoding}。"
+            f"{len(self.data.columns)} 个可选参数，编码：{self.data.encoding}。选择参数后会自动预览。"
         )
+        self.schedule_preview_refresh(immediate=True)
 
     def refresh_column_list(self) -> None:
         self.column_listbox.delete(0, tk.END)
@@ -211,6 +281,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self.selected_column_indices.add(self.visible_column_indices[selected_position])
 
         self.update_selection_label()
+        self.schedule_preview_refresh()
 
     def update_selection_label(self) -> None:
         count = len(self.selected_column_indices)
@@ -226,21 +297,59 @@ class HWiNFOPlotterApp(tk.Tk):
         self.column_listbox.selection_set(0, tk.END)
         self.selected_column_indices.update(self.visible_column_indices)
         self.update_selection_label()
+        self.schedule_preview_refresh()
 
     def clear_selection(self) -> None:
         self.selected_column_indices.clear()
         self.column_listbox.selection_clear(0, tk.END)
         self.update_selection_label()
+        self.clear_preview()
+        self.status_var.set("已清空选择。")
+        self.schedule_preview_refresh(immediate=True)
 
-    def preview_plot(self) -> None:
+    def reset_chart_options(self) -> None:
+        self.title_var.set("")
+        self.x_label_var.set("时间戳")
+        self.y_label_var.set("数值")
+        self.width_var.set("1920")
+        self.height_var.set("1080")
+        self.dpi_var.set("160")
+        self.line_width_var.set("1.8")
+        self.show_grid_var.set(True)
+        self.show_legend_var.set(True)
+        self.legend_location_var.set("自动")
+        self.status_var.set("图表样式已重置。")
+        self.schedule_preview_refresh()
+
+    def schedule_preview_refresh(self, *, immediate: bool = False) -> None:
+        if self.preview_after_id is not None:
+            try:
+                self.after_cancel(self.preview_after_id)
+            except tk.TclError:
+                pass
+            self.preview_after_id = None
+
+        delay_ms = 0 if immediate else 350
+        self.preview_after_id = self.after(delay_ms, self.refresh_preview)
+
+    def refresh_preview(self) -> None:
+        self.preview_after_id = None
+        if not self.data:
+            self.clear_preview()
+            return
+
+        if not self.get_selected_columns():
+            self.clear_preview()
+            return
+
         try:
             figure = self.build_current_figure()
         except Exception as exc:
-            messagebox.showerror("预览失败", str(exc))
+            self.status_var.set(f"自动预览未更新：{exc}")
             return
 
         self.show_figure(figure)
-        self.status_var.set("图表预览已更新。")
+        self.status_var.set("图表预览已自动更新。")
 
     def export_png(self) -> None:
         if not self.data:
@@ -282,14 +391,24 @@ class HWiNFOPlotterApp(tk.Tk):
         width_px = self.parse_positive_int(self.width_var.get(), "宽度")
         height_px = self.parse_positive_int(self.height_var.get(), "高度")
         dpi = self.parse_positive_int(self.dpi_var.get(), "DPI")
+        line_width = self.parse_positive_float(self.line_width_var.get(), "曲线线宽")
+        style = ChartStyle(
+            title=self.title_var.get().strip() or None,
+            x_label=self.x_label_var.get().strip() or "时间戳",
+            y_label=self.y_label_var.get().strip() or "数值",
+            line_width=line_width,
+            show_grid=self.show_grid_var.get(),
+            show_legend=self.show_legend_var.get(),
+            legend_location=LEGEND_LOCATION_CHOICES.get(self.legend_location_var.get(), "best"),
+        )
 
         return build_figure(
             self.data,
             selected_columns,
-            title=self.title_var.get().strip() or None,
             width_px=width_px,
             height_px=height_px,
             dpi=dpi,
+            style=style,
         )
 
     def get_selected_columns(self) -> list[int]:
@@ -325,6 +444,18 @@ class HWiNFOPlotterApp(tk.Tk):
             parsed = int(value)
         except ValueError as exc:
             raise ValueError(f"{field_name} 必须是整数。") from exc
+
+        if parsed <= 0:
+            raise ValueError(f"{field_name} 必须大于 0。")
+
+        return parsed
+
+    @staticmethod
+    def parse_positive_float(value: str, field_name: str) -> float:
+        try:
+            parsed = float(value.strip().replace(",", "."))
+        except ValueError as exc:
+            raise ValueError(f"{field_name} 必须是数字。") from exc
 
         if parsed <= 0:
             raise ValueError(f"{field_name} 必须大于 0。")

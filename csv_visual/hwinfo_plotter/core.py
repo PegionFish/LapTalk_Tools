@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import codecs
 import csv
 import io
 import re
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
@@ -13,14 +14,44 @@ from matplotlib import dates as mdates
 from matplotlib import font_manager, rcParams
 from matplotlib.figure import Figure
 
-ENCODING_CANDIDATES = ("utf-8-sig", "utf-8", "mbcs", "gb18030", "cp1252")
+ENCODING_CANDIDATES = (
+    "utf-8-sig",
+    "utf-8",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "gb18030",
+    "gbk",
+    "mbcs",
+    "cp1252",
+)
 FONT_CANDIDATES = (
     "Microsoft YaHei",
+    "Microsoft JhengHei",
+    "DengXian",
     "SimHei",
+    "SimSun",
     "Noto Sans CJK SC",
     "PingFang SC",
     "Arial Unicode MS",
     "Segoe UI",
+)
+LEGEND_LOCATIONS = {
+    "best",
+    "upper right",
+    "upper left",
+    "lower right",
+    "lower left",
+    "upper center",
+    "lower center",
+    "center left",
+    "center right",
+    "center",
+}
+BOM_ENCODINGS = (
+    (codecs.BOM_UTF8, "utf-8-sig"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
 )
 
 _FONT_READY = False
@@ -32,6 +63,18 @@ class SensorColumn:
     name: str
     occurrence: int
     display_name: str
+
+
+@dataclass(frozen=True)
+class ChartStyle:
+    title: str | None = None
+    x_label: str = "时间戳"
+    y_label: str = "数值"
+    line_width: float = 1.8
+    show_grid: bool = True
+    grid_alpha: float = 0.28
+    show_legend: bool = True
+    legend_location: str = "best"
 
 
 @dataclass
@@ -128,6 +171,7 @@ def build_figure(
     width_px: int = 1920,
     height_px: int = 1080,
     dpi: int = 160,
+    style: ChartStyle | None = None,
 ) -> Figure:
     if not column_indices:
         raise ValueError("至少需要选择一个参数。")
@@ -135,6 +179,14 @@ def build_figure(
         raise ValueError("输出尺寸过小，请至少使用 200 x 200。")
     if dpi < 72:
         raise ValueError("DPI 不能小于 72。")
+
+    chart_style = resolve_chart_style(style, title=title)
+    if chart_style.line_width <= 0:
+        raise ValueError("曲线线宽必须大于 0。")
+    if not 0 <= chart_style.grid_alpha <= 1:
+        raise ValueError("网格透明度必须在 0 到 1 之间。")
+    if chart_style.legend_location not in LEGEND_LOCATIONS:
+        raise ValueError(f"不支持的图例位置：{chart_style.legend_location}")
 
     configure_matplotlib_fonts()
 
@@ -161,7 +213,7 @@ def build_figure(
         axis.plot(
             x_values,
             y_values,
-            linewidth=1.8,
+            linewidth=chart_style.line_width,
             label=sensor_column.display_name,
         )
         plotted_line_count += 1
@@ -169,15 +221,18 @@ def build_figure(
     if plotted_line_count == 0:
         raise ValueError("所选参数没有可用于绘图的数值数据。")
 
-    axis.set_xlabel("时间戳")
-    axis.set_ylabel("数值")
-    axis.grid(True, linestyle="--", linewidth=0.8, alpha=0.28)
+    axis.set_xlabel(chart_style.x_label.strip() or "时间戳")
+    axis.set_ylabel(chart_style.y_label.strip() or "数值")
+    if chart_style.show_grid:
+        axis.grid(True, linestyle="--", linewidth=0.8, alpha=chart_style.grid_alpha)
+    else:
+        axis.grid(False)
 
-    if title:
-        axis.set_title(title)
+    if chart_style.title:
+        axis.set_title(chart_style.title)
 
-    if plotted_line_count > 1:
-        axis.legend(frameon=False, fontsize=9)
+    if chart_style.show_legend and plotted_line_count > 1:
+        axis.legend(frameon=False, fontsize=9, loc=chart_style.legend_location)
 
     return figure
 
@@ -206,13 +261,79 @@ def build_default_output_name(data: HWiNFOData, column_indices: Sequence[int]) -
 
 
 def decode_csv_bytes(raw_bytes: bytes) -> tuple[str, str]:
-    for encoding in ENCODING_CANDIDATES:
+    bom_encoding = detect_bom_encoding(raw_bytes)
+    if bom_encoding is not None:
         try:
-            return raw_bytes.decode(encoding), encoding
-        except UnicodeDecodeError:
+            return raw_bytes.decode(bom_encoding), bom_encoding
+        except UnicodeError:
+            return raw_bytes.decode(bom_encoding, errors="replace"), f"{bom_encoding} (errors=replace)"
+
+    decoded_candidates: list[tuple[str, str]] = []
+    seen_encodings: set[str] = set()
+    for encoding in ENCODING_CANDIDATES:
+        if encoding in seen_encodings:
+            continue
+        seen_encodings.add(encoding)
+
+        try:
+            decoded_candidates.append((encoding, raw_bytes.decode(encoding)))
+        except (LookupError, UnicodeError):
             continue
 
+    if decoded_candidates:
+        text, encoding = choose_best_decoding(decoded_candidates)
+        return text, encoding
+
     return raw_bytes.decode("utf-8-sig", errors="replace"), "utf-8-sig (errors=replace)"
+
+
+def detect_bom_encoding(raw_bytes: bytes) -> str | None:
+    for bom_bytes, encoding in BOM_ENCODINGS:
+        if raw_bytes.startswith(bom_bytes):
+            return encoding
+    return None
+
+
+def choose_best_decoding(decoded_candidates: Sequence[tuple[str, str]]) -> tuple[str, str]:
+    ranked_candidates = [
+        (score_decoded_text(text), index, encoding, text)
+        for index, (encoding, text) in enumerate(decoded_candidates)
+    ]
+    _, _, encoding, text = min(ranked_candidates)
+    return text, encoding
+
+
+def score_decoded_text(text: str) -> int:
+    sample = text[:8192]
+    header_line = sample.splitlines()[0] if sample else ""
+
+    score = 0
+    score += sample.count("\ufffd") * 50
+    score += sum(1 for char in sample if char == "\x00") * 80
+    score += sum(1 for char in sample if ord(char) < 32 and char not in "\r\n\t") * 8
+    score += sum(1 for char in sample if 0x7F <= ord(char) <= 0x9F) * 6
+    score += header_line.count("ï»¿") * 20
+
+    if "Date" in header_line:
+        score -= 2
+    if "Time" in header_line:
+        score -= 2
+
+    score -= min(count_cjk_characters(header_line), 12)
+    return max(score, 0)
+
+
+def count_cjk_characters(text: str) -> int:
+    return sum(1 for char in text if is_cjk_character(char))
+
+
+def is_cjk_character(char: str) -> bool:
+    code_point = ord(char)
+    return (
+        0x3400 <= code_point <= 0x4DBF
+        or 0x4E00 <= code_point <= 0x9FFF
+        or 0xF900 <= code_point <= 0xFAFF
+    )
 
 
 def build_sensor_columns(headers: Sequence[str], date_index: int, time_index: int) -> list[SensorColumn]:
@@ -305,6 +426,14 @@ def sanitize_filename(text: str) -> str:
     return sanitized[:80] or "chart"
 
 
+def resolve_chart_style(style: ChartStyle | None, title: str | None = None) -> ChartStyle:
+    if style is None:
+        return ChartStyle(title=title)
+    if title is not None and not style.title:
+        return replace(style, title=title)
+    return style
+
+
 def configure_matplotlib_fonts() -> None:
     global _FONT_READY
     if _FONT_READY:
@@ -315,6 +444,7 @@ def configure_matplotlib_fonts() -> None:
     if not selected_fonts:
         selected_fonts = ["Segoe UI"]
 
+    rcParams["font.family"] = ["sans-serif"]
     rcParams["font.sans-serif"] = selected_fonts + list(rcParams.get("font.sans-serif", []))
     rcParams["axes.unicode_minus"] = False
     _FONT_READY = True
