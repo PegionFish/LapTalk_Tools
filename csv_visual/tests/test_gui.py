@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hwinfo_plotter.core import HWiNFOData, SensorColumn
+from hwinfo_plotter.core import HWiNFOData, LoadedCsvSession, SensorColumn, SeriesKey
 from hwinfo_plotter.gui import HWiNFOPlotterApp, PreloadSeriesResult, fit_size_within_bounds
 
 
@@ -16,22 +16,40 @@ TEST_PREVIEW_PNG_BYTES = base64.b64decode(
 )
 
 
-def build_synthetic_data() -> HWiNFOData:
+def build_synthetic_data(name: str = "RunA.csv", *, base_value: float = 1.0) -> HWiNFOData:
     base_time = datetime(2026, 4, 13, 12, 0, 0)
     return HWiNFOData(
-        source_path=Path("synthetic.csv"),
+        source_path=Path(name),
         encoding="utf-8",
         headers=["Date", "Time", "CPU", "GPU"],
         columns=[
             SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU"),
             SensorColumn(index=3, name="GPU", occurrence=1, display_name="[003] GPU"),
         ],
-        timestamps=[base_time + timedelta(seconds=index) for index in range(3)],
+        timestamps=[base_time + timedelta(seconds=index) for index in range(4)],
         rows=[
-            ["13/04/2026", "12:00:00", "1.0", "2.0"],
-            ["13/04/2026", "12:00:01", "2.0", "3.0"],
-            ["13/04/2026", "12:00:02", "3.0", "4.0"],
+            ["13/04/2026", "12:00:00", f"{base_value + 0:.1f}", f"{base_value + 10:.1f}"],
+            ["13/04/2026", "12:00:01", f"{base_value + 1:.1f}", f"{base_value + 11:.1f}"],
+            ["13/04/2026", "12:00:02", f"{base_value + 2:.1f}", f"{base_value + 12:.1f}"],
+            ["13/04/2026", "12:00:03", f"{base_value + 3:.1f}", f"{base_value + 13:.1f}"],
         ],
+    )
+
+
+def build_session(
+    session_id: str,
+    alias: str,
+    *,
+    offset_seconds: float = 0.0,
+    is_reference: bool = False,
+    base_value: float = 1.0,
+) -> LoadedCsvSession:
+    return LoadedCsvSession(
+        session_id=session_id,
+        alias=alias,
+        data=build_synthetic_data(f"{alias}.csv", base_value=base_value),
+        offset_seconds=offset_seconds,
+        is_reference=is_reference,
     )
 
 
@@ -52,16 +70,21 @@ class GuiBehaviorTests(unittest.TestCase):
         self.assertIsNone(HWiNFOPlotterApp.parse_optional_font_family("自动"))
         self.assertEqual(HWiNFOPlotterApp.parse_optional_font_family("Microsoft YaHei"), "Microsoft YaHei")
 
-    def test_pick_csv_drop_path_uses_first_csv_file(self) -> None:
+    def test_pick_csv_drop_paths_keeps_all_csv_and_deduplicates(self) -> None:
+        base_dir = Path.cwd()
+        first_csv = str(base_dir / "RunA.csv")
+        second_csv = str(base_dir / "RunB.CSV")
+
         self.assertEqual(
-            HWiNFOPlotterApp.pick_csv_drop_path(
+            HWiNFOPlotterApp.pick_csv_drop_paths(
                 (
-                    r"C:\logs\notes.txt",
-                    r"C:\logs\R23-15.CSV",
-                    r"C:\logs\other.csv",
+                    str(base_dir / "notes.txt"),
+                    first_csv,
+                    second_csv,
+                    first_csv,
                 )
             ),
-            r"C:\logs\R23-15.CSV",
+            (first_csv, second_csv),
         )
 
     def test_fit_size_within_bounds_preserves_aspect_ratio(self) -> None:
@@ -123,16 +146,124 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_preview_request_keeps_export_size_and_colors(self) -> None:
-        data = build_synthetic_data()
+    def test_add_csv_files_loads_multiple_sessions_and_flattens_series(self) -> None:
+        data_a = build_synthetic_data("RunA.csv", base_value=1.0)
+        data_b = build_synthetic_data("RunB.csv", base_value=5.0)
 
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
-            app.data = data
-            app.selected_column_indices = {2}
-            app.column_colors = {2: "#123456"}
-            app.configure_trim_controls()
+
+            with patch("hwinfo_plotter.gui.load_hwinfo_csv", side_effect=[data_a, data_b]) as mock_load, patch.object(
+                app,
+                "start_background_preload",
+            ) as mock_preload:
+                app.add_csv_files(
+                    (
+                        str(Path.cwd() / "RunA.csv"),
+                        str(Path.cwd() / "RunB.csv"),
+                    )
+                )
+
+            self.assertEqual(mock_load.call_count, 2)
+            self.assertEqual(mock_preload.call_count, 2)
+            self.assertEqual(len(app.sessions), 2)
+            self.assertTrue(app.sessions[0].is_reference)
+            self.assertFalse(app.sessions[1].is_reference)
+            self.assertEqual(
+                app.column_listbox.get(0, "end"),
+                (
+                    "[RunA] [002] CPU",
+                    "[RunA] [003] GPU",
+                    "[RunB] [002] CPU",
+                    "[RunB] [003] GPU",
+                ),
+            )
+        finally:
+            app.on_close()
+
+    def test_add_csv_files_skips_duplicate_paths(self) -> None:
+        data_a = build_synthetic_data("RunA.csv", base_value=1.0)
+        file_path = str(Path.cwd() / "RunA.csv")
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+
+            with patch("hwinfo_plotter.gui.load_hwinfo_csv", return_value=data_a) as mock_load, patch.object(
+                app,
+                "start_background_preload",
+            ):
+                app.add_csv_files((file_path,))
+                app.add_csv_files((file_path,))
+
+            self.assertEqual(mock_load.call_count, 1)
+            self.assertEqual(len(app.sessions), 1)
+        finally:
+            app.on_close()
+
+    def test_remove_selected_sessions_cleans_related_state(self) -> None:
+        key_to_remove = SeriesKey("run_b", 2)
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session("run_a", "RunA", is_reference=True),
+                build_session("run_b", "RunB", base_value=5.0),
+            ]
+            app.selected_series_keys = {key_to_remove}
+            app.series_colors = {key_to_remove: "#123456"}
+            app.refresh_after_session_change(
+                preferred_selection=["run_b"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+
+            app.remove_selected_sessions()
+
+            self.assertEqual([session.session_id for session in app.sessions], ["run_a"])
+            self.assertEqual(app.selected_series_keys, set())
+            self.assertEqual(app.series_colors, {})
+        finally:
+            app.on_close()
+
+    def test_set_selected_session_as_reference_normalizes_offsets(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session("run_a", "RunA", is_reference=True),
+                build_session("run_b", "RunB", offset_seconds=8.0, base_value=5.0),
+            ]
+            app.refresh_session_tree(preferred_selection=["run_b"])
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.set_selected_session_as_reference()
+
+            self.assertEqual([session.offset_seconds for session in app.sessions], [-8.0, 0.0])
+            self.assertEqual([session.is_reference for session in app.sessions], [False, True])
+            mock_refresh.assert_called_once_with(immediate=True)
+        finally:
+            app.on_close()
+
+    def test_preview_request_keeps_export_size_sessions_and_series_colors(self) -> None:
+        run_a = build_session("run_a", "RunA", is_reference=True)
+        run_b = build_session("run_b", "RunB", offset_seconds=5.0, base_value=5.0)
+        key_a = SeriesKey("run_a", 2)
+        key_b = SeriesKey("run_b", 2)
+
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [run_a, run_b]
+            app.selected_series_keys = {key_a, key_b}
+            app.series_colors = {key_b: "#123456"}
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
             app.width_var.set("1600")
             app.height_var.set("900")
             app.dpi_var.set("144")
@@ -141,7 +272,7 @@ class GuiBehaviorTests(unittest.TestCase):
             app.fixed_time_interval_var.set("2")
             app.fixed_time_interval_unit_var.set("分钟")
             app.trim_start_var.set(1)
-            app.trim_end_var.set(2)
+            app.trim_end_var.set(6)
             app.show_time_axis_var.set(False)
             app.show_value_axis_var.set(False)
             app.axis_color_var.set("111111")
@@ -156,7 +287,9 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.width_px, 1600)
             self.assertEqual(preview_request.height_px, 900)
             self.assertEqual(preview_request.dpi, 144)
-            self.assertEqual(preview_request.color_by_column, {2: "#123456"})
+            self.assertEqual(preview_request.sessions, (run_a, run_b))
+            self.assertEqual(preview_request.selected_series, (key_a, key_b))
+            self.assertEqual(preview_request.color_by_series, {key_b: "#123456"})
             self.assertEqual(preview_request.style.title, "预览测试")
             self.assertEqual(preview_request.style.time_tick_density, 10)
             self.assertEqual(preview_request.style.fixed_time_interval_seconds, 120)
@@ -168,26 +301,30 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.style.value_text_color, "#444444")
             self.assertEqual(preview_request.style.legend_text_color, "#555555")
             self.assertEqual(preview_request.style.font_family, "Microsoft YaHei")
-            self.assertEqual(preview_request.visible_range_seconds, (1.0, 2.0))
+            self.assertEqual(preview_request.visible_range_seconds, (1.0, 6.0))
         finally:
             app.on_close()
 
     def test_apply_series_color_uses_hex_entry_value(self) -> None:
-        data = build_synthetic_data()
+        key = SeriesKey("run_a", 2)
 
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
-            app.data = data
-            app.selected_column_indices = {2}
-            app.refresh_selected_series_list()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.selected_series_keys = {key}
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
             app.selected_series_listbox.selection_set(0)
             app.series_color_var.set("66CCFF")
 
             with patch.object(app, "schedule_preview_refresh") as mock_refresh:
                 app.apply_series_color()
 
-            self.assertEqual(app.column_colors, {2: "#66ccff"})
+            self.assertEqual(app.series_colors, {key: "#66ccff"})
             self.assertEqual(app.series_color_var.get(), "66CCFF")
             self.assertEqual(app.selected_series_listbox.get(0), "[002] CPU  ·  #66CCFF")
             mock_refresh.assert_called_once_with(immediate=True)
@@ -195,14 +332,18 @@ class GuiBehaviorTests(unittest.TestCase):
             app.on_close()
 
     def test_apply_series_color_rejects_invalid_hex_value(self) -> None:
-        data = build_synthetic_data()
+        key = SeriesKey("run_a", 2)
 
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
-            app.data = data
-            app.selected_column_indices = {2}
-            app.refresh_selected_series_list()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.selected_series_keys = {key}
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
             app.selected_series_listbox.selection_set(0)
             app.series_color_var.set("GGHHII")
 
@@ -212,7 +353,7 @@ class GuiBehaviorTests(unittest.TestCase):
             ) as mock_refresh:
                 app.apply_series_color()
 
-            self.assertEqual(app.column_colors, {})
+            self.assertEqual(app.series_colors, {})
             mock_error.assert_called_once()
             mock_refresh.assert_not_called()
         finally:
@@ -249,13 +390,19 @@ class GuiBehaviorTests(unittest.TestCase):
             app.on_close()
 
     def test_curve_only_mode_is_exclusive_with_chart_element_toggles(self) -> None:
-        data = build_synthetic_data()
+        key_a = SeriesKey("run_a", 2)
+        key_b = SeriesKey("run_a", 3)
 
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
-            app.data = data
-            app.selected_column_indices = {2, 3}
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.selected_series_keys = {key_a, key_b}
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
 
             app.curve_only_mode_var.set(True)
 
@@ -305,51 +452,39 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_load_current_file_clears_stale_filter_and_lists_columns_immediately(self) -> None:
-        data = build_synthetic_data()
-
-        app = HWiNFOPlotterApp()
-        try:
-            app.withdraw()
-            app.file_var.set("synthetic.csv")
-            app.filter_var.set("missing")
-
-            with patch.object(app, "start_background_preload") as mock_preload, patch(
-                "hwinfo_plotter.gui.load_hwinfo_csv",
-                return_value=data,
-            ) as mock_load:
-                app.load_current_file()
-
-            mock_load.assert_called_once_with("synthetic.csv", preload_numeric=False)
-            mock_preload.assert_called_once_with(data)
-            self.assertEqual(app.filter_var.get(), "")
-            self.assertEqual(app.visible_column_indices, [2, 3])
-            self.assertEqual(app.column_listbox.get(0, "end"), ("[002] CPU", "[003] GPU"))
-        finally:
-            app.on_close()
-
-    def test_handle_dropped_files_loads_first_csv_path(self) -> None:
+    def test_handle_dropped_files_loads_all_csv_paths(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
 
-            with patch.object(app, "load_current_file") as mock_load:
+            with patch.object(app, "add_csv_files") as mock_add:
                 app.handle_dropped_files(
                     (
-                        r"C:\logs\notes.txt",
-                        r"C:\logs\R23-15.CSV",
+                        str(Path.cwd() / "notes.txt"),
+                        str(Path.cwd() / "RunA.csv"),
+                        str(Path.cwd() / "RunB.csv"),
                     )
                 )
 
-            self.assertEqual(app.file_var.get(), r"C:\logs\R23-15.CSV")
-            mock_load.assert_called_once_with()
+            mock_add.assert_called_once_with(
+                (
+                    str(Path.cwd() / "RunA.csv"),
+                    str(Path.cwd() / "RunB.csv"),
+                )
+            )
         finally:
             app.on_close()
 
     def test_process_dropped_files_dispatches_queued_paths(self) -> None:
         class FakeDropManager:
             def __init__(self) -> None:
-                self.queued_paths = [(r"C:\logs\R23-15.CSV",), None]
+                self.queued_paths = [
+                    (
+                        str(Path.cwd() / "RunA.csv"),
+                        str(Path.cwd() / "RunB.csv"),
+                    ),
+                    None,
+                ]
 
             def pop_dropped_paths(self):
                 return self.queued_paths.pop(0)
@@ -368,7 +503,12 @@ class GuiBehaviorTests(unittest.TestCase):
             ) as mock_schedule:
                 app.process_dropped_files()
 
-            mock_handle.assert_called_once_with((r"C:\logs\R23-15.CSV",))
+            mock_handle.assert_called_once_with(
+                (
+                    str(Path.cwd() / "RunA.csv"),
+                    str(Path.cwd() / "RunB.csv"),
+                )
+            )
             mock_schedule.assert_called_once_with()
         finally:
             app.on_close()
@@ -380,29 +520,29 @@ class GuiBehaviorTests(unittest.TestCase):
 
             with patch("hwinfo_plotter.gui.messagebox.showerror") as mock_error, patch.object(
                 app,
-                "load_current_file",
-            ) as mock_load:
-                app.handle_dropped_files((r"C:\logs\notes.txt",))
+                "add_csv_files",
+            ) as mock_add:
+                app.handle_dropped_files((str(Path.cwd() / "notes.txt"),))
 
             mock_error.assert_called_once_with("未找到 CSV", "请拖入 .csv 或 .CSV 文件。")
-            mock_load.assert_not_called()
+            mock_add.assert_not_called()
         finally:
             app.on_close()
 
-    def test_process_preview_results_reports_preload_completion_without_selection(self) -> None:
-        data = build_synthetic_data()
-
+    def test_process_preview_results_marks_preload_completion_without_selection(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
-            app.data = data
-            app.active_preload_request_id = 3
-            app.preload_results.put(PreloadSeriesResult(request_id=3, data=data))
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_session_tree(preferred_selection=["run_a"])
+            app.preload_results.put(PreloadSeriesResult(request_id=3, session_id="run_a"))
 
             with patch.object(app, "after"):
                 app.process_preview_results()
 
-            self.assertEqual(app.status_var.get(), "全部数值序列已在后台预载入内存，后续预览和导出会更快。")
+            self.assertTrue(app.sessions[0].preload_ready)
+            self.assertEqual(app.sessions[0].preload_error, None)
+            self.assertEqual(app.status_var.get(), "RunA 的数值序列已在后台预载入内存。")
         finally:
             app.on_close()
 

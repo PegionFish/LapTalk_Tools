@@ -7,22 +7,30 @@ import threading
 import tkinter as tk
 from collections.abc import Sequence
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
 from tkinter import colorchooser, filedialog, messagebox, ttk
+from uuid import uuid4
 
 from .core import (
     ChartStyle,
     DEFAULT_TIME_TICK_DENSITY,
     HWiNFOData,
+    LoadedCsvSession,
     MAX_TIME_TICK_DENSITY,
     MIN_TIME_TICK_DENSITY,
+    SeriesDescriptor,
+    SeriesKey,
+    build_comparison_figure,
+    build_comparison_output_name,
+    build_series_descriptors,
     build_default_output_name,
-    build_figure,
+    compute_global_time_bounds,
     format_elapsed_time,
     list_available_font_families,
     load_hwinfo_csv,
+    normalize_offsets_for_reference,
     render_figure_png_bytes,
     save_figure,
 )
@@ -230,13 +238,13 @@ def fit_size_within_bounds(
 @dataclass(frozen=True)
 class PreviewRenderRequest:
     request_id: int
-    data: HWiNFOData
-    selected_columns: tuple[int, ...]
+    sessions: tuple[LoadedCsvSession, ...]
+    selected_series: tuple[SeriesKey, ...]
     width_px: int
     height_px: int
     dpi: int
     style: ChartStyle
-    color_by_column: dict[int, str]
+    color_by_series: dict[SeriesKey, str]
     visible_range_seconds: tuple[float, float] | None = None
 
 
@@ -250,13 +258,14 @@ class PreviewRenderResult:
 @dataclass(frozen=True)
 class PreloadSeriesRequest:
     request_id: int
+    session_id: str
     data: HWiNFOData
 
 
 @dataclass(frozen=True)
 class PreloadSeriesResult:
     request_id: int
-    data: HWiNFOData
+    session_id: str
     error_message: str | None = None
 
 
@@ -267,10 +276,11 @@ class HWiNFOPlotterApp(tk.Tk):
         self.geometry("1420x900")
         self.minsize(1180, 720)
 
-        self.data: HWiNFOData | None = None
-        self.visible_column_indices: list[int] = []
-        self.selected_column_indices: set[int] = set()
-        self.column_colors: dict[int, str] = {}
+        self.sessions: list[LoadedCsvSession] = []
+        self.visible_series_descriptors: list[SeriesDescriptor] = []
+        self.selected_series_keys: set[SeriesKey] = set()
+        self.series_colors: dict[SeriesKey, str] = {}
+        self._updating_session_editor = False
         self.preview_label: ttk.Label | None = None
         self.preview_image: tk.PhotoImage | None = None
         self.preview_source_png_bytes: bytes | None = None
@@ -279,6 +289,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_after_id: str | None = None
         self.preview_display_after_id: str | None = None
         self.file_drop_after_id: str | None = None
+        self.process_results_after_id: str | None = None
         self.preview_request_id = 0
         self.active_preview_request_id = 0
         self.pending_preview_request: PreviewRenderRequest | None = None
@@ -290,17 +301,15 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_worker = threading.Thread(target=self._preview_worker_loop, name="csv-visual-preview", daemon=True)
         self.preview_worker.start()
         self.preload_request_id = 0
-        self.active_preload_request_id = 0
-        self.pending_preload_request: PreloadSeriesRequest | None = None
         self.preload_results: Queue[PreloadSeriesResult] = Queue()
-        self.preload_request_lock = threading.Lock()
-        self.preload_request_event = threading.Event()
+        self.preload_requests: Queue[PreloadSeriesRequest] = Queue()
         self.preload_worker = threading.Thread(target=self._preload_worker_loop, name="csv-visual-preload", daemon=True)
         self.preload_worker.start()
         self.font_family_choices = ("自动", *list_available_font_families())
 
-        self.file_var = tk.StringVar(value=self._find_default_csv())
         self.filter_var = tk.StringVar()
+        self.session_alias_var = tk.StringVar()
+        self.session_offset_var = tk.StringVar(value="0")
         self.title_var = tk.StringVar()
         self.width_var = tk.StringVar(value="1920")
         self.height_var = tk.StringVar(value="1080")
@@ -325,7 +334,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.show_value_axis_var = tk.BooleanVar(value=True)
         self.legend_location_var = tk.StringVar(value="自动")
         self.selection_var = tk.StringVar(value="当前未选择参数")
-        self.status_var = tk.StringVar(value="请选择或拖入一个 HWiNFO CSV 文件。")
+        self.status_var = tk.StringVar(value="请添加一个或多个 HWiNFO CSV 文件。")
         self.series_color_var = tk.StringVar()
         self.axis_color_var = tk.StringVar()
         self.grid_color_var = tk.StringVar()
@@ -368,23 +377,119 @@ class HWiNFOPlotterApp(tk.Tk):
         self._build_layout()
         self.enable_file_drop()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.after(80, self.process_preview_results)
+        self.process_results_after_id = self.after(80, self.process_preview_results)
 
-        if self.file_var.get():
-            self.after(100, self.load_current_file)
+        default_csv = self._find_default_csv()
+        if default_csv:
+            self.after(100, lambda path=default_csv: self.add_csv_files((path,)))
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        file_frame = ttk.Frame(self, padding=(14, 14, 14, 10))
-        file_frame.grid(row=0, column=0, sticky="ew")
-        file_frame.columnconfigure(1, weight=1)
+        file_frame = ttk.Labelframe(self, text="文件管理", padding=(14, 10, 14, 10))
+        file_frame.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 10))
+        file_frame.columnconfigure(0, weight=1)
+        file_frame.rowconfigure(0, weight=1)
 
-        ttk.Label(file_frame, text="CSV 文件").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(file_frame, textvariable=self.file_var).grid(row=0, column=1, sticky="ew")
-        ttk.Button(file_frame, text="浏览...", command=self.browse_csv).grid(row=0, column=2, padx=(8, 0))
-        ttk.Button(file_frame, text="重新加载", command=self.load_current_file).grid(row=0, column=3, padx=(8, 0))
+        session_table_frame = ttk.Frame(file_frame)
+        session_table_frame.grid(row=0, column=0, sticky="ew")
+        session_table_frame.columnconfigure(0, weight=1)
+        session_table_frame.rowconfigure(0, weight=1)
+
+        self.session_tree = ttk.Treeview(
+            session_table_frame,
+            columns=("alias", "filename", "duration", "offset", "reference"),
+            show="headings",
+            selectmode="extended",
+            height=5,
+        )
+        self.session_tree.heading("alias", text="别名")
+        self.session_tree.heading("filename", text="文件名")
+        self.session_tree.heading("duration", text="时长")
+        self.session_tree.heading("offset", text="偏移(秒)")
+        self.session_tree.heading("reference", text="基准")
+        self.session_tree.column("alias", width=200, anchor="w")
+        self.session_tree.column("filename", width=240, anchor="w")
+        self.session_tree.column("duration", width=90, anchor="center")
+        self.session_tree.column("offset", width=90, anchor="center")
+        self.session_tree.column("reference", width=60, anchor="center")
+        self.session_tree.grid(row=0, column=0, sticky="ew")
+        self.session_tree.bind("<<TreeviewSelect>>", self.on_session_selection_changed)
+
+        session_scrollbar = ttk.Scrollbar(
+            session_table_frame,
+            orient=tk.VERTICAL,
+            command=self.session_tree.yview,
+        )
+        session_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.session_tree.configure(yscrollcommand=session_scrollbar.set)
+
+        file_button_row = ttk.Frame(file_frame)
+        file_button_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        file_button_row.columnconfigure((0, 1, 2, 3), weight=1)
+
+        ttk.Button(file_button_row, text="添加 CSV...", command=self.browse_csv).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(file_button_row, text="移除选中", command=self.remove_selected_sessions).grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(file_button_row, text="清空全部", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=4)
+        ttk.Button(file_button_row, text="设为基准", command=self.set_selected_session_as_reference).grid(row=0, column=3, sticky="ew", padx=(4, 0))
+
+        session_detail_frame = ttk.Frame(file_frame)
+        session_detail_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        session_detail_frame.columnconfigure(1, weight=1)
+        session_detail_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(session_detail_frame, text="别名").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.session_alias_entry = ttk.Entry(session_detail_frame, textvariable=self.session_alias_var)
+        self.session_alias_entry.grid(row=0, column=1, sticky="ew")
+        self.session_alias_entry.bind("<Return>", self.apply_selected_session_details)
+        self.session_alias_entry.bind("<FocusOut>", self.apply_selected_session_details)
+
+        ttk.Label(session_detail_frame, text="偏移(秒)").grid(row=0, column=2, sticky="w", padx=(12, 8))
+        self.session_offset_entry = ttk.Entry(session_detail_frame, textvariable=self.session_offset_var, width=12)
+        self.session_offset_entry.grid(row=0, column=3, sticky="ew")
+        self.session_offset_entry.bind("<Return>", self.apply_selected_session_details)
+        self.session_offset_entry.bind("<FocusOut>", self.apply_selected_session_details)
+
+        offset_button_row = ttk.Frame(file_frame)
+        offset_button_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        offset_button_row.columnconfigure((0, 1, 2, 3, 4), weight=1)
+
+        ttk.Button(offset_button_row, text="-10s", command=lambda: self.nudge_selected_session_offset(-10.0)).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 4),
+        )
+        ttk.Button(offset_button_row, text="-1s", command=lambda: self.nudge_selected_session_offset(-1.0)).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=4,
+        )
+        ttk.Button(offset_button_row, text="应用编辑", command=self.apply_selected_session_details).grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=4,
+        )
+        ttk.Button(offset_button_row, text="+1s", command=lambda: self.nudge_selected_session_offset(1.0)).grid(
+            row=0,
+            column=3,
+            sticky="ew",
+            padx=4,
+        )
+        ttk.Button(offset_button_row, text="+10s", command=lambda: self.nudge_selected_session_offset(10.0)).grid(
+            row=0,
+            column=4,
+            sticky="ew",
+            padx=(4, 0),
+        )
+
+        ttk.Label(
+            file_frame,
+            text="正偏移向右移动曲线，负偏移向左移动曲线；拖入多个 CSV 时会按路径自动去重。",
+        ).grid(row=4, column=0, sticky="w", pady=(8, 0))
 
         paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
         paned.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 10))
@@ -726,7 +831,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.preview_placeholder = ttk.Label(
             self.preview_host,
-            text="浏览或拖入 CSV 并选择参数后，图表会按当前配置自动预览。",
+            text="添加或拖入一个或多个 CSV，并选择参数后，图表会按当前配置自动预览。",
             anchor="center",
             justify="center",
         )
@@ -742,6 +847,293 @@ class HWiNFOPlotterApp(tk.Tk):
             if matches:
                 return str(matches[0])
         return ""
+
+    @staticmethod
+    def normalize_session_path(file_path: str | Path) -> str:
+        return str(Path(file_path).expanduser().resolve())
+
+    @staticmethod
+    def format_offset_seconds(value: float) -> str:
+        if float(value).is_integer():
+            return f"{int(value)}"
+        return f"{value:.3f}".rstrip("0").rstrip(".")
+
+    def _build_session_id(self) -> str:
+        return uuid4().hex
+
+    def get_render_sessions(self) -> tuple[LoadedCsvSession, ...]:
+        return tuple(session for session in self.sessions if session.is_visible)
+
+    def get_session_by_id(self, session_id: str) -> LoadedCsvSession | None:
+        for session in self.sessions:
+            if session.session_id == session_id:
+                return session
+        return None
+
+    def get_selected_session_ids(self) -> tuple[str, ...]:
+        return tuple(self.session_tree.selection())
+
+    def get_selected_session(self) -> LoadedCsvSession | None:
+        selected_session_ids = self.get_selected_session_ids()
+        if len(selected_session_ids) != 1:
+            return None
+        return self.get_session_by_id(selected_session_ids[0])
+
+    def refresh_session_tree(self, preferred_selection: Sequence[str] | None = None) -> None:
+        selected_session_ids = tuple(preferred_selection) if preferred_selection is not None else self.get_selected_session_ids()
+        self.session_tree.delete(*self.session_tree.get_children())
+
+        for session in self.sessions:
+            duration_text = "00:00:00"
+            if session.data.elapsed_seconds:
+                duration_text = format_elapsed_time(session.data.elapsed_seconds[-1])
+            self.session_tree.insert(
+                "",
+                tk.END,
+                iid=session.session_id,
+                values=(
+                    session.alias,
+                    session.data.source_path.name,
+                    duration_text,
+                    self.format_offset_seconds(session.offset_seconds),
+                    "是" if session.is_reference else "",
+                ),
+            )
+
+        valid_selection_ids = [session_id for session_id in selected_session_ids if self.session_tree.exists(session_id)]
+        if not valid_selection_ids and self.sessions:
+            valid_selection_ids = [self.sessions[0].session_id]
+
+        if valid_selection_ids:
+            self.session_tree.selection_set(valid_selection_ids)
+            self.session_tree.focus(valid_selection_ids[0])
+        else:
+            self.session_tree.selection_remove(self.session_tree.selection())
+
+        self.sync_session_editor()
+
+    def sync_session_editor(self) -> None:
+        selected_session = self.get_selected_session()
+        entry_state = tk.NORMAL if selected_session is not None else tk.DISABLED
+
+        self._updating_session_editor = True
+        try:
+            self.session_alias_var.set("" if selected_session is None else selected_session.alias)
+            self.session_offset_var.set(
+                "" if selected_session is None else self.format_offset_seconds(selected_session.offset_seconds)
+            )
+        finally:
+            self._updating_session_editor = False
+
+        self.session_alias_entry.configure(state=entry_state)
+        self.session_offset_entry.configure(state=entry_state)
+
+    def on_session_selection_changed(self, _event=None) -> None:
+        self.sync_session_editor()
+
+    def refresh_after_session_change(
+        self,
+        *,
+        preferred_selection: Sequence[str] | None = None,
+        preserve_trim_range: bool = True,
+        refresh_preview: bool = True,
+    ) -> None:
+        self.refresh_session_tree(preferred_selection=preferred_selection)
+        self.refresh_column_list()
+        self.refresh_selected_series_list()
+        self.configure_trim_controls(preserve_range=preserve_trim_range)
+        if refresh_preview:
+            self.schedule_preview_refresh(immediate=True)
+
+    def add_csv_files(self, file_paths: Sequence[str]) -> None:
+        normalized_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for file_path in file_paths:
+            if Path(file_path).suffix.lower() != ".csv":
+                continue
+            normalized_path = self.normalize_session_path(file_path)
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            normalized_paths.append(normalized_path)
+
+        if not normalized_paths:
+            messagebox.showerror("未找到 CSV", "请选择或拖入至少一个 .csv / .CSV 文件。")
+            return
+
+        existing_paths = {
+            self.normalize_session_path(session.data.source_path): session.session_id
+            for session in self.sessions
+        }
+        new_sessions: list[LoadedCsvSession] = []
+        skipped_paths: list[str] = []
+        failed_messages: list[str] = []
+        had_existing_sessions = bool(self.sessions)
+
+        self.cancel_pending_preview_requests()
+        self.status_var.set("正在加载 CSV 并整理可用参数，请稍候...")
+        self.update_idletasks()
+
+        for normalized_path in normalized_paths:
+            existing_session_id = existing_paths.get(normalized_path)
+            if existing_session_id is not None:
+                skipped_paths.append(Path(normalized_path).name)
+                continue
+
+            try:
+                data = load_hwinfo_csv(normalized_path, preload_numeric=False)
+            except Exception as exc:
+                failed_messages.append(f"{Path(normalized_path).name}：{exc}")
+                continue
+
+            new_session = LoadedCsvSession(
+                session_id=self._build_session_id(),
+                alias=data.source_path.stem,
+                data=data,
+                is_reference=not self.sessions and not new_sessions,
+            )
+            new_sessions.append(new_session)
+            existing_paths[normalized_path] = new_session.session_id
+
+        if new_sessions:
+            self.sessions.extend(new_sessions)
+            if not any(session.is_reference for session in self.sessions):
+                self.sessions = list(normalize_offsets_for_reference(self.sessions, self.sessions[0].session_id))
+
+            for session in new_sessions:
+                self.start_background_preload(session)
+
+            self.refresh_after_session_change(
+                preferred_selection=[session.session_id for session in new_sessions],
+                preserve_trim_range=had_existing_sessions,
+            )
+            self.status_var.set(
+                f"已加载 {len(new_sessions)} 个 CSV 文件，当前共 {len(self.sessions)} 个文件，"
+                f"{len(build_series_descriptors(self.get_render_sessions()))} 个可选参数。"
+            )
+        elif skipped_paths and not failed_messages:
+            self.refresh_session_tree()
+            self.status_var.set("选中的 CSV 已存在，已跳过重复导入。")
+        elif failed_messages:
+            self.status_var.set("CSV 加载失败。")
+
+        if failed_messages:
+            messagebox.showerror("部分 CSV 加载失败", "\n".join(failed_messages))
+        elif skipped_paths and new_sessions:
+            self.status_var.set(
+                f"已加载 {len(new_sessions)} 个 CSV 文件，跳过 {len(skipped_paths)} 个重复文件。"
+            )
+
+    def remove_selected_sessions(self) -> None:
+        selected_session_ids = set(self.get_selected_session_ids())
+        if not selected_session_ids:
+            return
+
+        self.sessions = [session for session in self.sessions if session.session_id not in selected_session_ids]
+        self.selected_series_keys = {
+            series_key
+            for series_key in self.selected_series_keys
+            if series_key.session_id not in selected_session_ids
+        }
+        self.series_colors = {
+            series_key: color_text
+            for series_key, color_text in self.series_colors.items()
+            if series_key.session_id not in selected_session_ids
+        }
+
+        if self.sessions and not any(session.is_reference for session in self.sessions):
+            self.sessions = list(normalize_offsets_for_reference(self.sessions, self.sessions[0].session_id))
+
+        if not self.sessions:
+            self.cancel_pending_preview_requests()
+            self.cancel_pending_preload_requests()
+            self.refresh_after_session_change(preferred_selection=(), preserve_trim_range=False, refresh_preview=False)
+            self.clear_preview()
+            self.status_var.set("请添加一个或多个 HWiNFO CSV 文件。")
+            return
+
+        self.refresh_after_session_change(
+            preferred_selection=[self.sessions[0].session_id],
+            preserve_trim_range=True,
+        )
+        self.status_var.set("已移除选中的 CSV 文件。")
+
+    def clear_all_sessions(self) -> None:
+        self.sessions.clear()
+        self.visible_series_descriptors.clear()
+        self.selected_series_keys.clear()
+        self.series_colors.clear()
+        self.cancel_pending_preview_requests()
+        self.cancel_pending_preload_requests()
+        self.refresh_after_session_change(preferred_selection=(), preserve_trim_range=False, refresh_preview=False)
+        self.clear_preview()
+        self.status_var.set("请添加一个或多个 HWiNFO CSV 文件。")
+
+    def set_selected_session_as_reference(self) -> None:
+        selected_session = self.get_selected_session()
+        if selected_session is None:
+            messagebox.showinfo("未选择文件", "请在文件列表中选中一个 CSV 文件并将其设为基准。")
+            return
+
+        self.sessions = list(normalize_offsets_for_reference(self.sessions, selected_session.session_id))
+        self.refresh_after_session_change(
+            preferred_selection=[selected_session.session_id],
+            preserve_trim_range=True,
+        )
+        self.status_var.set(f"已将 {selected_session.alias} 设为基准文件。")
+
+    def apply_selected_session_details(self, _event=None) -> str | None:
+        if self._updating_session_editor:
+            return None
+
+        selected_session = self.get_selected_session()
+        if selected_session is None:
+            return None
+
+        try:
+            offset_seconds = self.parse_float(self.session_offset_var.get(), "偏移(秒)")
+        except ValueError as exc:
+            messagebox.showerror("偏移格式无效", str(exc))
+            self.sync_session_editor()
+            return "break"
+
+        alias = self.session_alias_var.get().strip() or selected_session.data.source_path.stem
+        updated_sessions: list[LoadedCsvSession] = []
+        for session in self.sessions:
+            if session.session_id == selected_session.session_id:
+                updated_sessions.append(
+                    replace(
+                        session,
+                        alias=alias,
+                        offset_seconds=offset_seconds,
+                    )
+                )
+            else:
+                updated_sessions.append(session)
+
+        self.sessions = updated_sessions
+        self.refresh_after_session_change(
+            preferred_selection=[selected_session.session_id],
+            preserve_trim_range=True,
+        )
+        self.status_var.set(f"已更新 {alias} 的别名和偏移。")
+        return "break"
+
+    def nudge_selected_session_offset(self, delta_seconds: float) -> None:
+        selected_session = self.get_selected_session()
+        if selected_session is None:
+            messagebox.showinfo("未选择文件", "请先在文件列表中选中一个 CSV 文件。")
+            return
+
+        self.session_offset_var.set(
+            self.format_offset_seconds(float(selected_session.offset_seconds) + float(delta_seconds))
+        )
+        self.apply_selected_session_details()
+
+    def format_series_list_label(self, descriptor: SeriesDescriptor) -> str:
+        if len(self.get_render_sessions()) > 1:
+            return f"[{descriptor.session_alias}] {descriptor.column_display_name}"
+        return descriptor.column_display_name
 
     def _on_filter_changed(self, *_args) -> None:
         self.refresh_column_list()
@@ -858,7 +1250,7 @@ class HWiNFOPlotterApp(tk.Tk):
         finally:
             self._updating_trim_controls = False
 
-        if self.data:
+        if self.get_render_sessions():
             self.schedule_preview_refresh()
 
     def _on_trim_end_changed(self, *_args) -> None:
@@ -875,7 +1267,7 @@ class HWiNFOPlotterApp(tk.Tk):
         finally:
             self._updating_trim_controls = False
 
-        if self.data:
+        if self.get_render_sessions():
             self.schedule_preview_refresh()
 
     def update_trim_labels(self) -> None:
@@ -887,32 +1279,40 @@ class HWiNFOPlotterApp(tk.Tk):
             f"可视化范围：{format_elapsed_time(start_seconds)} → {format_elapsed_time(end_seconds)}"
         )
 
-    def configure_trim_controls(self) -> None:
-        total_duration_seconds = self.get_total_duration_seconds()
-        slider_state = tk.NORMAL if total_duration_seconds > 0 else tk.DISABLED
+    def configure_trim_controls(self, preserve_range: bool = False) -> None:
+        global_start_seconds, global_end_seconds = self.get_global_time_bounds()
+        slider_state = tk.NORMAL if self.get_render_sessions() else tk.DISABLED
+        previous_range = self.get_visible_range_seconds() if preserve_range else None
         for slider in (self.trim_start_scale, self.trim_end_scale):
-            slider.configure(from_=0, to=total_duration_seconds, state=slider_state)
+            slider.configure(from_=global_start_seconds, to=global_end_seconds, state=slider_state)
 
         self._updating_trim_controls = True
         try:
-            self.trim_start_var.set(0)
-            self.trim_end_var.set(total_duration_seconds)
+            if previous_range is None:
+                self.trim_start_var.set(global_start_seconds)
+                self.trim_end_var.set(global_end_seconds)
+            else:
+                start_seconds = max(global_start_seconds, min(previous_range[0], global_end_seconds))
+                end_seconds = max(global_start_seconds, min(previous_range[1], global_end_seconds))
+                if end_seconds < start_seconds:
+                    start_seconds, end_seconds = global_start_seconds, global_end_seconds
+                self.trim_start_var.set(start_seconds)
+                self.trim_end_var.set(end_seconds)
             self.update_trim_labels()
         finally:
             self._updating_trim_controls = False
 
-    def get_total_duration_seconds(self) -> int:
-        if not self.data or not self.data.elapsed_seconds:
-            return 0
-        return max(0, int(round(self.data.elapsed_seconds[-1])))
+    def get_global_time_bounds(self) -> tuple[float, float]:
+        return compute_global_time_bounds(self.get_render_sessions())
 
     def get_visible_range_seconds(self) -> tuple[float, float] | None:
-        if not self.data or not self.data.elapsed_seconds:
+        render_sessions = self.get_render_sessions()
+        if not render_sessions:
             return None
 
-        total_duration_seconds = self.data.elapsed_seconds[-1]
-        start_seconds = max(0.0, min(float(self.trim_start_var.get()), total_duration_seconds))
-        end_seconds = max(0.0, min(float(self.trim_end_var.get()), total_duration_seconds))
+        global_start_seconds, global_end_seconds = self.get_global_time_bounds()
+        start_seconds = max(global_start_seconds, min(float(self.trim_start_var.get()), global_end_seconds))
+        end_seconds = max(global_start_seconds, min(float(self.trim_end_var.get()), global_end_seconds))
         if end_seconds < start_seconds:
             start_seconds, end_seconds = end_seconds, start_seconds
         return start_seconds, end_seconds
@@ -934,15 +1334,14 @@ class HWiNFOPlotterApp(tk.Tk):
         self.schedule_preview_display_refresh()
 
     def browse_csv(self) -> None:
-        file_path = filedialog.askopenfilename(
+        file_paths = filedialog.askopenfilenames(
             title="选择 HWiNFO CSV 文件",
             filetypes=[("CSV 文件", "*.csv;*.CSV"), ("所有文件", "*.*")],
         )
-        if not file_path:
+        if not file_paths:
             return
 
-        self.file_var.set(file_path)
-        self.load_current_file()
+        self.add_csv_files(file_paths)
 
     def _build_chart_color_row(
         self,
@@ -1050,92 +1449,71 @@ class HWiNFOPlotterApp(tk.Tk):
             self.schedule_file_drop_processing()
 
     def handle_dropped_files(self, file_paths: Sequence[str]) -> None:
-        csv_path = self.pick_csv_drop_path(file_paths)
-        if csv_path is None:
+        csv_paths = self.pick_csv_drop_paths(file_paths)
+        if not csv_paths:
             messagebox.showerror("未找到 CSV", "请拖入 .csv 或 .CSV 文件。")
             return
 
-        self.file_var.set(csv_path)
-        self.load_current_file()
+        self.add_csv_files(csv_paths)
 
     @staticmethod
-    def pick_csv_drop_path(file_paths: Sequence[str]) -> str | None:
+    def pick_csv_drop_paths(file_paths: Sequence[str]) -> tuple[str, ...]:
+        csv_paths: list[str] = []
+        seen_paths: set[str] = set()
         for file_path in file_paths:
             if Path(file_path).suffix.lower() == ".csv":
-                return file_path
-        return None
+                normalized_path = HWiNFOPlotterApp.normalize_session_path(file_path)
+                if normalized_path in seen_paths:
+                    continue
+                seen_paths.add(normalized_path)
+                csv_paths.append(file_path)
+        return tuple(csv_paths)
 
     def load_current_file(self) -> None:
-        file_text = self.file_var.get().strip()
-        if not file_text:
-            messagebox.showerror("未选择文件", "请先选择或拖入一个 CSV 文件。")
-            return
-
-        self.cancel_pending_preview_requests()
-        self.cancel_pending_preload_requests()
-        self.status_var.set("正在加载 CSV 并整理可用参数，请稍候...")
-        self.update_idletasks()
-
-        try:
-            self.data = load_hwinfo_csv(file_text, preload_numeric=False)
-        except Exception as exc:
-            messagebox.showerror("加载失败", str(exc))
-            self.status_var.set("CSV 加载失败。")
-            return
-
-        self.selected_column_indices.clear()
-        self.column_colors.clear()
-        if self.filter_var.get():
-            self.filter_var.set("")
-        else:
-            self.refresh_column_list()
-        self.refresh_selected_series_list()
-        self.configure_trim_controls()
-        self.clear_preview()
-        self.start_background_preload(self.data)
-        self.status_var.set(
-            f"已加载 {self.data.source_path.name}，共 {len(self.data.timestamps)} 行有效数据，"
-            f"{len(self.data.columns)} 个可选参数，编码：{self.data.encoding}。"
-            "数值序列正在后台预载入内存，选择参数后会在后台自动预览。"
-        )
-        self.schedule_preview_refresh(immediate=True)
+        messagebox.showinfo("已改为多文件模式", "请使用“添加 CSV...”按钮或直接拖入一个或多个 CSV 文件。")
 
     def refresh_column_list(self) -> None:
         self.column_listbox.delete(0, tk.END)
-        self.visible_column_indices.clear()
+        self.visible_series_descriptors.clear()
 
-        if not self.data:
+        if not self.sessions:
             self.selection_var.set("当前未选择参数")
             return
 
         keyword = self.filter_var.get().strip().lower()
-        for column in self.data.columns:
-            haystack = f"{column.name} {column.display_name}".lower()
+        for descriptor in build_series_descriptors(self.get_render_sessions()):
+            haystack = (
+                f"{descriptor.session_alias} {descriptor.column_display_name} {descriptor.legend_label}"
+            ).lower()
             if keyword and keyword not in haystack:
                 continue
 
-            self.visible_column_indices.append(column.index)
-            self.column_listbox.insert(tk.END, column.display_name)
+            listbox_index = len(self.visible_series_descriptors)
+            self.visible_series_descriptors.append(descriptor)
+            self.column_listbox.insert(tk.END, self.format_series_list_label(descriptor))
+            selected_color = self.series_colors.get(descriptor.key)
+            if selected_color:
+                self.column_listbox.itemconfig(listbox_index, foreground=selected_color)
 
-        for listbox_index, column_index in enumerate(self.visible_column_indices):
-            if column_index in self.selected_column_indices:
+        for listbox_index, descriptor in enumerate(self.visible_series_descriptors):
+            if descriptor.key in self.selected_series_keys:
                 self.column_listbox.selection_set(listbox_index)
 
         self.update_selection_label()
 
     def on_column_selection_changed(self, _event=None) -> None:
-        visible_set = set(self.visible_column_indices)
-        self.selected_column_indices -= visible_set
+        visible_series_keys = {descriptor.key for descriptor in self.visible_series_descriptors}
+        self.selected_series_keys -= visible_series_keys
 
         for selected_position in self.column_listbox.curselection():
-            self.selected_column_indices.add(self.visible_column_indices[selected_position])
+            self.selected_series_keys.add(self.visible_series_descriptors[selected_position].key)
 
         self.update_selection_label()
         self.refresh_selected_series_list()
         self.schedule_preview_refresh()
 
     def update_selection_label(self) -> None:
-        count = len(self.selected_column_indices)
+        count = len(self.selected_series_keys)
         if count == 0:
             self.selection_var.set("当前未选择参数")
         else:
@@ -1144,13 +1522,14 @@ class HWiNFOPlotterApp(tk.Tk):
     def refresh_selected_series_list(self) -> None:
         self.selected_series_listbox.delete(0, tk.END)
 
-        if not self.data:
+        if not self.sessions:
             return
 
-        selected_columns = self.get_selected_series_columns()
-        for listbox_index, column in enumerate(selected_columns):
-            color_text = self.column_colors.get(column.index)
-            display_text = column.display_name if not color_text else f"{column.display_name}  ·  {color_text.upper()}"
+        selected_descriptors = self.get_selected_series_descriptors()
+        for listbox_index, descriptor in enumerate(selected_descriptors):
+            color_text = self.series_colors.get(descriptor.key)
+            base_text = self.format_series_list_label(descriptor)
+            display_text = base_text if not color_text else f"{base_text}  ·  {color_text.upper()}"
             self.selected_series_listbox.insert(tk.END, display_text)
             if color_text:
                 self.selected_series_listbox.itemconfig(listbox_index, foreground=color_text)
@@ -1160,7 +1539,7 @@ class HWiNFOPlotterApp(tk.Tk):
         return "break"
 
     def apply_series_color(self) -> None:
-        if not self.data:
+        if not self.sessions:
             return
 
         selected_positions = self.selected_series_listbox.curselection()
@@ -1175,17 +1554,18 @@ class HWiNFOPlotterApp(tk.Tk):
             return
 
         self.series_color_var.set(selected_color.removeprefix("#").upper())
-        selected_columns = self.get_selected_series_columns()
+        selected_descriptors = self.get_selected_series_descriptors()
         for position in selected_positions:
-            if position >= len(selected_columns):
+            if position >= len(selected_descriptors):
                 continue
-            self.column_colors[selected_columns[position].index] = selected_color
+            self.series_colors[selected_descriptors[position].key] = selected_color
 
         self.refresh_selected_series_list()
+        self.refresh_column_list()
         self.schedule_preview_refresh(immediate=True)
 
     def choose_series_color(self) -> None:
-        if not self.data:
+        if not self.sessions:
             return
 
         selected_positions = self.selected_series_listbox.curselection()
@@ -1210,7 +1590,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.apply_series_color()
 
     def clear_series_color(self) -> None:
-        if not self.data:
+        if not self.sessions:
             return
 
         selected_positions = self.selected_series_listbox.curselection()
@@ -1218,29 +1598,30 @@ class HWiNFOPlotterApp(tk.Tk):
             messagebox.showinfo("未选择参数", "请先在“参数颜色”列表中选择一个或多个参数。")
             return
 
-        selected_columns = self.get_selected_series_columns()
+        selected_descriptors = self.get_selected_series_descriptors()
         changed = False
         for position in selected_positions:
-            if position >= len(selected_columns):
+            if position >= len(selected_descriptors):
                 continue
-            changed = self.column_colors.pop(selected_columns[position].index, None) is not None or changed
+            changed = self.series_colors.pop(selected_descriptors[position].key, None) is not None or changed
 
         if changed:
             self.refresh_selected_series_list()
+            self.refresh_column_list()
             self.schedule_preview_refresh(immediate=True)
 
     def select_all_visible(self) -> None:
-        if not self.visible_column_indices:
+        if not self.visible_series_descriptors:
             return
 
         self.column_listbox.selection_set(0, tk.END)
-        self.selected_column_indices.update(self.visible_column_indices)
+        self.selected_series_keys.update(descriptor.key for descriptor in self.visible_series_descriptors)
         self.update_selection_label()
         self.refresh_selected_series_list()
         self.schedule_preview_refresh()
 
     def clear_selection(self) -> None:
-        self.selected_column_indices.clear()
+        self.selected_series_keys.clear()
         self.column_listbox.selection_clear(0, tk.END)
         self.update_selection_label()
         self.refresh_selected_series_list()
@@ -1286,12 +1667,12 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def refresh_preview(self) -> None:
         self.preview_after_id = None
-        if not self.data:
+        if not self.sessions:
             self.cancel_pending_preview_requests()
             self.clear_preview()
             return
 
-        if not self.get_selected_columns():
+        if not self.get_selected_series_keys():
             self.cancel_pending_preview_requests()
             self.clear_preview()
             return
@@ -1306,16 +1687,23 @@ class HWiNFOPlotterApp(tk.Tk):
         self.status_var.set("正在后台生成图表预览...")
 
     def export_png(self) -> None:
-        if not self.data:
-            messagebox.showerror("尚未加载", "请先加载一个 CSV 文件。")
+        if not self.sessions:
+            messagebox.showerror("尚未加载", "请先加载一个或多个 CSV 文件。")
             return
 
-        selected_columns = self.get_selected_columns()
-        if not selected_columns:
+        selected_series = self.get_selected_series_keys()
+        if not selected_series:
             messagebox.showerror("未选择参数", "请至少选择一个参数。")
             return
 
-        default_name = build_default_output_name(self.data, selected_columns)
+        render_sessions = self.get_render_sessions()
+        if len(render_sessions) == 1 and all(series_key.session_id == render_sessions[0].session_id for series_key in selected_series):
+            default_name = build_default_output_name(
+                render_sessions[0].data,
+                [series_key.column_index for series_key in selected_series],
+            )
+        else:
+            default_name = build_comparison_output_name(render_sessions, selected_series)
         output_path = filedialog.asksaveasfilename(
             title="导出透明 PNG",
             defaultextension=".png",
@@ -1340,58 +1728,62 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def build_current_figure(self):
         (
-            selected_columns,
+            selected_series,
             width_px,
             height_px,
             dpi,
             style,
-            color_by_column,
+            color_by_series,
             visible_range_seconds,
         ) = self.collect_render_options()
-        if not self.data:
-            raise ValueError("请先加载一个 CSV 文件。")
+        render_sessions = self.get_render_sessions()
+        if not render_sessions:
+            raise ValueError("请先加载一个或多个 CSV 文件。")
 
-        return build_figure(
-            self.data,
-            selected_columns,
+        return build_comparison_figure(
+            render_sessions,
+            selected_series,
             width_px=width_px,
             height_px=height_px,
             dpi=dpi,
             style=style,
-            color_by_column=color_by_column,
+            color_by_series=color_by_series,
             visible_range_seconds=visible_range_seconds,
         )
 
     def build_preview_request(self) -> PreviewRenderRequest:
         (
-            selected_columns,
+            selected_series,
             width_px,
             height_px,
             dpi,
             style,
-            color_by_column,
+            color_by_series,
             visible_range_seconds,
         ) = self.collect_render_options()
-        if not self.data:
-            raise ValueError("请先加载一个 CSV 文件。")
+        render_sessions = self.get_render_sessions()
+        if not render_sessions:
+            raise ValueError("请先加载一个或多个 CSV 文件。")
 
         self.preview_request_id += 1
         self.active_preview_request_id = self.preview_request_id
         return PreviewRenderRequest(
             request_id=self.preview_request_id,
-            data=self.data,
-            selected_columns=tuple(selected_columns),
+            sessions=render_sessions,
+            selected_series=tuple(selected_series),
             width_px=width_px,
             height_px=height_px,
             dpi=dpi,
             style=style,
-            color_by_column=color_by_column,
+            color_by_series=color_by_series,
             visible_range_seconds=visible_range_seconds,
         )
 
-    def collect_render_options(self) -> tuple[list[int], int, int, int, ChartStyle, dict[int, str], tuple[float, float] | None]:
-        selected_columns = self.get_selected_columns()
-        if not selected_columns:
+    def collect_render_options(
+        self,
+    ) -> tuple[list[SeriesKey], int, int, int, ChartStyle, dict[SeriesKey, str], tuple[float, float] | None]:
+        selected_series = self.get_selected_series_keys()
+        if not selected_series:
             raise ValueError("请至少选择一个参数。")
 
         width_px = self.parse_positive_int(self.width_var.get(), "宽度")
@@ -1416,14 +1808,14 @@ class HWiNFOPlotterApp(tk.Tk):
             time_tick_density=self.parse_time_tick_density(),
             fixed_time_interval_seconds=self.parse_fixed_time_interval_seconds(),
         )
-        color_by_column = {
-            column_index: color_text
-            for column_index, color_text in self.column_colors.items()
-            if column_index in self.selected_column_indices
+        color_by_series = {
+            series_key: color_text
+            for series_key, color_text in self.series_colors.items()
+            if series_key in self.selected_series_keys
         }
         visible_range_seconds = self.get_visible_range_seconds()
 
-        return selected_columns, width_px, height_px, dpi, style, color_by_column, visible_range_seconds
+        return selected_series, width_px, height_px, dpi, style, color_by_series, visible_range_seconds
 
     def enqueue_preview_request(self, preview_request: PreviewRenderRequest) -> None:
         with self.preview_request_lock:
@@ -1437,23 +1829,21 @@ class HWiNFOPlotterApp(tk.Tk):
             self.pending_preview_request = None
             self.preview_request_event.clear()
 
-    def start_background_preload(self, data: HWiNFOData) -> None:
+    def start_background_preload(self, session: LoadedCsvSession) -> None:
         self.preload_request_id += 1
         preload_request = PreloadSeriesRequest(
             request_id=self.preload_request_id,
-            data=data,
+            session_id=session.session_id,
+            data=session.data,
         )
-        self.active_preload_request_id = preload_request.request_id
-        with self.preload_request_lock:
-            self.pending_preload_request = preload_request
-            self.preload_request_event.set()
+        self.preload_requests.put(preload_request)
 
     def cancel_pending_preload_requests(self) -> None:
-        self.preload_request_id += 1
-        self.active_preload_request_id = self.preload_request_id
-        with self.preload_request_lock:
-            self.pending_preload_request = None
-            self.preload_request_event.clear()
+        while True:
+            try:
+                self.preload_requests.get_nowait()
+            except Empty:
+                break
 
     def _preview_worker_loop(self) -> None:
         while not self.preview_shutdown_event.is_set():
@@ -1473,14 +1863,14 @@ class HWiNFOPlotterApp(tk.Tk):
 
             figure = None
             try:
-                figure = build_figure(
-                    preview_request.data,
-                    preview_request.selected_columns,
+                figure = build_comparison_figure(
+                    preview_request.sessions,
+                    preview_request.selected_series,
                     width_px=preview_request.width_px,
                     height_px=preview_request.height_px,
                     dpi=preview_request.dpi,
                     style=preview_request.style,
-                    color_by_column=preview_request.color_by_column,
+                    color_by_series=preview_request.color_by_series,
                     visible_range_seconds=preview_request.visible_range_seconds,
                 )
                 png_bytes = render_figure_png_bytes(figure)
@@ -1505,19 +1895,12 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _preload_worker_loop(self) -> None:
         while not self.preview_shutdown_event.is_set():
-            self.preload_request_event.wait(0.1)
+            try:
+                preload_request = self.preload_requests.get(timeout=0.1)
+            except Empty:
+                continue
             if self.preview_shutdown_event.is_set():
                 return
-            if not self.preload_request_event.is_set():
-                continue
-
-            with self.preload_request_lock:
-                preload_request = self.pending_preload_request
-                self.pending_preload_request = None
-                self.preload_request_event.clear()
-
-            if preload_request is None:
-                continue
 
             try:
                 preload_request.data.preload_numeric_series()
@@ -1525,7 +1908,7 @@ class HWiNFOPlotterApp(tk.Tk):
                 self.preload_results.put(
                     PreloadSeriesResult(
                         request_id=preload_request.request_id,
-                        data=preload_request.data,
+                        session_id=preload_request.session_id,
                         error_message=str(exc),
                     )
                 )
@@ -1534,7 +1917,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self.preload_results.put(
                 PreloadSeriesResult(
                     request_id=preload_request.request_id,
-                    data=preload_request.data,
+                    session_id=preload_request.session_id,
                 )
             )
 
@@ -1558,23 +1941,34 @@ class HWiNFOPlotterApp(tk.Tk):
         try:
             while True:
                 preload_result = self.preload_results.get_nowait()
-                if preload_result.request_id != self.active_preload_request_id:
-                    continue
-                if preload_result.data is not self.data:
+                session = self.get_session_by_id(preload_result.session_id)
+                if session is None:
                     continue
 
+                self.sessions = [
+                    replace(
+                        current_session,
+                        preload_ready=preload_result.error_message is None,
+                        preload_error=preload_result.error_message,
+                    )
+                    if current_session.session_id == preload_result.session_id
+                    else current_session
+                    for current_session in self.sessions
+                ]
+
                 if preload_result.error_message is not None:
-                    if not self.get_selected_columns():
+                    if not self.get_selected_series_keys():
                         self.status_var.set(f"后台预载失败：{preload_result.error_message}")
                     continue
 
-                if not self.get_selected_columns():
-                    self.status_var.set("全部数值序列已在后台预载入内存，后续预览和导出会更快。")
+                if not self.get_selected_series_keys():
+                    session_alias = session.alias if session.alias else session.data.source_path.stem
+                    self.status_var.set(f"{session_alias} 的数值序列已在后台预载入内存。")
         except Empty:
             pass
         finally:
             if not self.preview_shutdown_event.is_set():
-                self.after(80, self.process_preview_results)
+                self.process_results_after_id = self.after(80, self.process_preview_results)
 
     def on_close(self) -> None:
         if self.file_drop_after_id is not None:
@@ -1583,12 +1977,17 @@ class HWiNFOPlotterApp(tk.Tk):
             except tk.TclError:
                 pass
             self.file_drop_after_id = None
+        if self.process_results_after_id is not None:
+            try:
+                self.after_cancel(self.process_results_after_id)
+            except tk.TclError:
+                pass
+            self.process_results_after_id = None
         if self.file_drop_manager is not None:
             self.file_drop_manager.unregister()
             self.file_drop_manager = None
         self.preview_shutdown_event.set()
         self.preview_request_event.set()
-        self.preload_request_event.set()
         if self.preview_after_id is not None:
             try:
                 self.after_cancel(self.preview_after_id)
@@ -1603,18 +2002,27 @@ class HWiNFOPlotterApp(tk.Tk):
             self.preview_display_after_id = None
         self.destroy()
 
-    def get_selected_columns(self) -> list[int]:
-        if not self.data:
+    def get_selected_series_keys(self) -> list[SeriesKey]:
+        if not self.sessions:
             return []
 
-        selected_set = set(self.selected_column_indices)
-        return [column.index for column in self.data.columns if column.index in selected_set]
+        selected_set = set(self.selected_series_keys)
+        return [
+            descriptor.key
+            for descriptor in build_series_descriptors(self.get_render_sessions())
+            if descriptor.key in selected_set
+        ]
 
-    def get_selected_series_columns(self):
-        if not self.data:
+    def get_selected_series_descriptors(self) -> list[SeriesDescriptor]:
+        if not self.sessions:
             return []
 
-        return [column for column in self.data.columns if column.index in self.selected_column_indices]
+        selected_set = set(self.selected_series_keys)
+        return [
+            descriptor
+            for descriptor in build_series_descriptors(self.get_render_sessions())
+            if descriptor.key in selected_set
+        ]
 
     def show_preview_image(self, png_bytes: bytes) -> None:
         self.clear_preview()
@@ -1729,6 +2137,17 @@ class HWiNFOPlotterApp(tk.Tk):
             raise ValueError(f"{field_name} 必须大于 0。")
 
         return parsed
+
+    @staticmethod
+    def parse_float(value: str, field_name: str) -> float:
+        cleaned_value = value.strip().replace(",", ".")
+        if not cleaned_value:
+            return 0.0
+
+        try:
+            return float(cleaned_value)
+        except ValueError as exc:
+            raise ValueError(f"{field_name} 必须是数字。") from exc
 
     @staticmethod
     def normalize_hex_color(value: str) -> str:
