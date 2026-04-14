@@ -8,7 +8,7 @@ import tkinter as tk
 import webbrowser
 from collections.abc import Sequence
 from ctypes import wintypes
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from queue import Empty, Queue
 from tkinter import colorchooser, filedialog, messagebox, ttk
@@ -16,12 +16,16 @@ from uuid import uuid4
 
 from .app_about import AboutInfo, get_app_about_info
 from .core import (
+    AlignedExtremaGroup,
     ChartStyle,
     DEFAULT_TIME_TICK_DENSITY,
+    ExtremaDetectionConfig,
+    ExtremaPointKey,
     HWiNFOData,
     LoadedCsvSession,
     MAX_TIME_TICK_DENSITY,
     MIN_TIME_TICK_DENSITY,
+    SensorColumn,
     SeriesDescriptor,
     SeriesKey,
     build_comparison_figure,
@@ -31,8 +35,10 @@ from .core import (
     compute_session_active_timeline_range,
     compute_session_timeline_range,
     compute_global_time_bounds,
+    detect_extrema_for_sessions,
     format_elapsed_time,
     format_compact_elapsed_time,
+    group_aligned_extrema,
     list_available_font_families,
     load_hwinfo_csv,
     normalize_offsets_for_reference,
@@ -57,6 +63,15 @@ TIME_INTERVAL_UNIT_CHOICES = {
     "秒": 1,
     "分钟": 60,
     "小时": 3600,
+}
+EXTREMA_MODE_CHOICES = {
+    "峰": "peak",
+    "谷": "valley",
+    "峰+谷": "both",
+}
+EXTREMA_KIND_LABELS = {
+    "peak": "峰",
+    "valley": "谷",
 }
 WINDOWS_DROP_MESSAGE = 0x0233
 WINDOWS_NC_DESTROY_MESSAGE = 0x0082
@@ -252,6 +267,9 @@ class PreviewRenderRequest:
     style: ChartStyle
     color_by_series: dict[SeriesKey, str]
     visible_range_seconds: tuple[float, float] | None = None
+    extrema_config: ExtremaDetectionConfig | None = None
+    extrema_assignments: dict[ExtremaPointKey, float] = field(default_factory=dict)
+    extrema_point_colors: dict[ExtremaPointKey, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -283,15 +301,26 @@ class HWiNFOPlotterApp(tk.Tk):
         self.minsize(1180, 720)
 
         self.sessions: list[LoadedCsvSession] = []
+        self.visible_parameter_columns: list[SensorColumn] = []
         self.visible_series_descriptors: list[SeriesDescriptor] = []
         self.selected_series_keys: set[SeriesKey] = set()
         self.series_colors: dict[SeriesKey, str] = {}
+        self.detected_extrema_groups: tuple[AlignedExtremaGroup, ...] = ()
+        self.extrema_assignments: dict[ExtremaPointKey, float] = {}
+        self.extrema_point_colors: dict[ExtremaPointKey, str] = {}
+        self.extrema_source_columns: list[SensorColumn] = []
+        self.extrema_point_key_by_row_id: dict[str, ExtremaPointKey] = {}
+        self.selected_extrema_point_key: ExtremaPointKey | None = None
+        self.extrema_refresh_after_id: str | None = None
+        self._updating_extrema_controls = False
         self._updating_session_editor = False
         self.preview_label: ttk.Label | None = None
         self.preview_image: tk.PhotoImage | None = None
         self.about_window: tk.Toplevel | None = None
         self.session_alias_entry: ttk.Entry | None = None
         self.session_offset_entry: ttk.Entry | None = None
+        self.extrema_source_combobox: ttk.Combobox | None = None
+        self.extrema_group_tree: ttk.Treeview | None = None
         self.preview_source_png_bytes: bytes | None = None
         self.preview_source_size: tuple[int, int] | None = None
         self.preview_display_size: tuple[int, int] | None = None
@@ -321,6 +350,18 @@ class HWiNFOPlotterApp(tk.Tk):
         self.session_alias_var = tk.StringVar()
         self.session_offset_var = tk.StringVar(value="0")
         self.session_source_trim_var = tk.StringVar(value="有效片段：--")
+        self.extrema_enabled_var = tk.BooleanVar(value=False)
+        self.extrema_source_var = tk.StringVar()
+        self.extrema_mode_var = tk.StringVar(value="峰+谷")
+        self.extrema_min_distance_var = tk.StringVar(value="1.0")
+        self.extrema_min_prominence_var = tk.StringVar(value="0.0")
+        self.extrema_smoothing_window_var = tk.StringVar(value="1")
+        self.extrema_alignment_tolerance_var = tk.StringVar(value="1.0")
+        self.extrema_selected_group_var = tk.StringVar(value="--")
+        self.extrema_selected_file_var = tk.StringVar(value="--")
+        self.extrema_selected_source_value_var = tk.StringVar(value="--")
+        self.extrema_assignment_value_var = tk.StringVar()
+        self.extrema_point_color_var = tk.StringVar()
         self.title_var = tk.StringVar()
         self.width_var = tk.StringVar(value="1920")
         self.height_var = tk.StringVar(value="1080")
@@ -385,6 +426,16 @@ class HWiNFOPlotterApp(tk.Tk):
             option_var.trace_add("write", self._on_standard_chart_element_changed)
         self.curve_only_mode_var.trace_add("write", self._on_curve_only_mode_changed)
         self.time_density_var.trace_add("write", self._on_time_density_changed)
+        self.extrema_enabled_var.trace_add("write", self._on_extrema_enabled_changed)
+        for extrema_var in (
+            self.extrema_source_var,
+            self.extrema_mode_var,
+            self.extrema_min_distance_var,
+            self.extrema_min_prominence_var,
+            self.extrema_smoothing_window_var,
+            self.extrema_alignment_tolerance_var,
+        ):
+            extrema_var.trace_add("write", self._on_extrema_setting_changed)
         self.update_time_density_label()
 
         self._build_app_menu()
@@ -586,6 +637,25 @@ class HWiNFOPlotterApp(tk.Tk):
         ttk.Button(file_button_row, text="清空全部", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=4)
         ttk.Button(file_button_row, text="设为基准", command=self.set_selected_session_as_reference).grid(row=0, column=3, sticky="ew", padx=(4, 0))
 
+        session_alias_row = ttk.Frame(self.file_management_module)
+        session_alias_row.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        session_alias_row.columnconfigure(1, weight=1)
+
+        ttk.Label(session_alias_row, text="选中文件别名").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.session_alias_entry = ttk.Entry(
+            session_alias_row,
+            textvariable=self.session_alias_var,
+            state=tk.DISABLED,
+        )
+        self.session_alias_entry.grid(row=0, column=1, sticky="ew")
+        self.session_alias_entry.bind("<Return>", self.apply_selected_session_alias)
+        ttk.Button(session_alias_row, text="应用别名", command=self.apply_selected_session_alias).grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=(8, 0),
+        )
+
     def _build_parameter_and_chart_module(self, parent: tk.Misc) -> None:
         self.parameter_chart_module = ttk.Labelframe(parent, text="参数与图表设置", padding=(10, 8, 10, 8))
         self.parameter_chart_module.grid(row=1, column=0, sticky="nsew")
@@ -705,8 +775,10 @@ class HWiNFOPlotterApp(tk.Tk):
             padx=(4, 0),
         )
 
+        self._build_extrema_mapping_module(control_panel)
+
         options_frame = ttk.Labelframe(control_panel, text="图表设置", padding=12)
-        options_frame.grid(row=6, column=0, sticky="ew")
+        options_frame.grid(row=7, column=0, sticky="ew")
         options_frame.columnconfigure(1, weight=1)
         options_frame.columnconfigure(3, weight=1)
 
@@ -864,11 +936,159 @@ class HWiNFOPlotterApp(tk.Tk):
         )
 
         action_row = ttk.Frame(control_panel)
-        action_row.grid(row=7, column=0, sticky="ew", pady=(12, 0))
+        action_row.grid(row=8, column=0, sticky="ew", pady=(12, 0))
         action_row.columnconfigure((0, 1), weight=1)
 
         ttk.Button(action_row, text="重置样式", command=self.reset_chart_options).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         ttk.Button(action_row, text="导出透明 PNG", command=self.export_png).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+
+    def _build_extrema_mapping_module(self, parent: tk.Misc) -> None:
+        extrema_frame = ttk.Labelframe(parent, text="峰谷映射", padding=12)
+        extrema_frame.grid(row=6, column=0, sticky="nsew", pady=(0, 12))
+        extrema_frame.columnconfigure(0, weight=1)
+        extrema_frame.rowconfigure(3, weight=1)
+
+        ttk.Checkbutton(
+            extrema_frame,
+            text="启用峰谷映射",
+            variable=self.extrema_enabled_var,
+        ).grid(row=0, column=0, sticky="w")
+
+        source_row = ttk.Frame(extrema_frame)
+        source_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        source_row.columnconfigure(1, weight=1)
+        source_row.columnconfigure(3, weight=1)
+
+        ttk.Label(source_row, text="检测源参数").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.extrema_source_combobox = ttk.Combobox(
+            source_row,
+            textvariable=self.extrema_source_var,
+            state="readonly",
+        )
+        self.extrema_source_combobox.grid(row=0, column=1, sticky="ew")
+
+        ttk.Label(source_row, text="模式").grid(row=0, column=2, sticky="w", padx=(12, 8))
+        ttk.Combobox(
+            source_row,
+            textvariable=self.extrema_mode_var,
+            values=list(EXTREMA_MODE_CHOICES.keys()),
+            state="readonly",
+            width=10,
+        ).grid(row=0, column=3, sticky="ew")
+
+        settings_row = ttk.Frame(extrema_frame)
+        settings_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        settings_row.columnconfigure((1, 3, 5, 7), weight=1)
+
+        ttk.Label(settings_row, text="最小间距(秒)").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(settings_row, textvariable=self.extrema_min_distance_var, width=8).grid(row=0, column=1, sticky="ew")
+        ttk.Label(settings_row, text="最小突出度").grid(row=0, column=2, sticky="w", padx=(12, 8))
+        ttk.Entry(settings_row, textvariable=self.extrema_min_prominence_var, width=8).grid(row=0, column=3, sticky="ew")
+        ttk.Label(settings_row, text="平滑窗口").grid(row=0, column=4, sticky="w", padx=(12, 8))
+        ttk.Entry(settings_row, textvariable=self.extrema_smoothing_window_var, width=8).grid(row=0, column=5, sticky="ew")
+        ttk.Label(settings_row, text="分组容差(秒)").grid(row=0, column=6, sticky="w", padx=(12, 8))
+        ttk.Entry(settings_row, textvariable=self.extrema_alignment_tolerance_var, width=8).grid(row=0, column=7, sticky="ew")
+
+        action_row = ttk.Frame(extrema_frame)
+        action_row.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        action_row.columnconfigure((0, 1, 2), weight=1)
+
+        ttk.Button(action_row, text="重新检测", command=self.refresh_extrema_groups).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 4),
+        )
+        ttk.Button(action_row, text="清空赋值", command=self.clear_extrema_assignments).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=4,
+        )
+        ttk.Button(action_row, text="清空峰谷点颜色", command=self.clear_extrema_point_colors).grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=(4, 0),
+        )
+
+        tree_frame = ttk.Frame(extrema_frame)
+        tree_frame.grid(row=4, column=0, sticky="nsew", pady=(10, 0))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        self.extrema_group_tree = ttk.Treeview(
+            tree_frame,
+            columns=("group", "kind", "time", "file", "source", "assigned", "color"),
+            show="headings",
+            height=8,
+        )
+        self.extrema_group_tree.grid(row=0, column=0, sticky="nsew")
+        self.extrema_group_tree.bind("<<TreeviewSelect>>", self.on_extrema_group_selection_changed)
+        for column_name, heading_text, width in (
+            ("group", "组号", 84),
+            ("kind", "类型", 54),
+            ("time", "对齐时间", 84),
+            ("file", "文件", 120),
+            ("source", "原始峰值", 90),
+            ("assigned", "赋值", 90),
+            ("color", "颜色", 90),
+        ):
+            self.extrema_group_tree.heading(column_name, text=heading_text)
+            self.extrema_group_tree.column(column_name, width=width, anchor="center", stretch=column_name == "file")
+
+        extrema_tree_scrollbar = ttk.Scrollbar(
+            tree_frame,
+            orient=tk.VERTICAL,
+            command=self.extrema_group_tree.yview,
+        )
+        extrema_tree_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.extrema_group_tree.configure(yscrollcommand=extrema_tree_scrollbar.set)
+
+        editor_frame = ttk.LabelFrame(extrema_frame, text="编辑", padding=10)
+        editor_frame.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+        editor_frame.columnconfigure(1, weight=1)
+        editor_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(editor_frame, text="当前组号").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(editor_frame, textvariable=self.extrema_selected_group_var).grid(row=0, column=1, sticky="w")
+        ttk.Label(editor_frame, text="当前文件").grid(row=0, column=2, sticky="w", padx=(12, 8))
+        ttk.Label(editor_frame, textvariable=self.extrema_selected_file_var).grid(row=0, column=3, sticky="w")
+        ttk.Label(editor_frame, text="原始峰值").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Label(editor_frame, textvariable=self.extrema_selected_source_value_var).grid(row=1, column=1, sticky="w", pady=(8, 0))
+
+        ttk.Label(editor_frame, text="赋值").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
+        ttk.Entry(editor_frame, textvariable=self.extrema_assignment_value_var).grid(row=2, column=1, sticky="ew", pady=(8, 0))
+        ttk.Label(editor_frame, text="颜色HEX").grid(row=2, column=2, sticky="w", padx=(12, 8), pady=(8, 0))
+        ttk.Entry(editor_frame, textvariable=self.extrema_point_color_var).grid(row=2, column=3, sticky="ew", pady=(8, 0))
+
+        editor_button_row = ttk.Frame(editor_frame)
+        editor_button_row.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        editor_button_row.columnconfigure((0, 1, 2, 3), weight=1)
+        ttk.Button(editor_button_row, text="应用赋值", command=self.apply_extrema_assignment).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 4),
+        )
+        ttk.Button(editor_button_row, text="清除赋值", command=self.clear_selected_extrema_assignment).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=4,
+        )
+        ttk.Button(editor_button_row, text="应用颜色", command=self.apply_extrema_point_color).grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=4,
+        )
+        ttk.Button(editor_button_row, text="清除颜色", command=self.clear_selected_extrema_point_color).grid(
+            row=0,
+            column=3,
+            sticky="ew",
+            padx=(4, 0),
+        )
 
     def _build_preview_module(self, parent: tk.Misc) -> None:
         self.preview_module = ttk.Labelframe(parent, text="图表预览", padding=8)
@@ -983,6 +1203,65 @@ class HWiNFOPlotterApp(tk.Tk):
             return None
         return self.get_session_by_id(selected_session_ids[0])
 
+    def get_shared_parameter_columns(self) -> list[SensorColumn]:
+        render_sessions = self.get_render_sessions()
+        if not render_sessions:
+            return []
+
+        first_session = render_sessions[0]
+        if len(render_sessions) == 1:
+            return list(first_session.data.columns)
+
+        column_signatures_by_session = [
+            {
+                (column.index, column.name, column.occurrence)
+                for column in session.data.columns
+            }
+            for session in render_sessions[1:]
+        ]
+        return [
+            column
+            for column in first_session.data.columns
+            if all(
+                (column.index, column.name, column.occurrence) in column_signatures
+                for column_signatures in column_signatures_by_session
+            )
+        ]
+
+    def get_selected_parameter_indices(self) -> tuple[int, ...]:
+        selected_parameter_indices = {series_key.column_index for series_key in self.selected_series_keys}
+        return tuple(
+            column.index
+            for column in self.get_shared_parameter_columns()
+            if column.index in selected_parameter_indices
+        )
+
+    def expand_series_keys_for_parameter_indices(self, parameter_indices: Sequence[int]) -> set[SeriesKey]:
+        parameter_index_set = set(parameter_indices)
+        if not parameter_index_set:
+            return set()
+
+        expanded_series_keys: set[SeriesKey] = set()
+        for session in self.get_render_sessions():
+            available_column_indices = {column.index for column in session.data.columns}
+            for parameter_index in parameter_index_set:
+                if parameter_index in available_column_indices:
+                    expanded_series_keys.add(SeriesKey(session.session_id, parameter_index))
+        return expanded_series_keys
+
+    def sync_selected_parameter_series(self) -> None:
+        if not self.sessions:
+            self.selected_series_keys.clear()
+            return
+
+        shared_parameter_indices = {column.index for column in self.get_shared_parameter_columns()}
+        selected_parameter_indices = {
+            series_key.column_index
+            for series_key in self.selected_series_keys
+            if series_key.column_index in shared_parameter_indices
+        }
+        self.selected_series_keys = self.expand_series_keys_for_parameter_indices(selected_parameter_indices)
+
     def refresh_session_tree(self, preferred_selection: Sequence[str] | None = None) -> None:
         selected_session_ids = tuple(preferred_selection) if preferred_selection is not None else self.get_selected_session_ids()
         self.session_tree.delete(*self.session_tree.get_children())
@@ -1049,11 +1328,299 @@ class HWiNFOPlotterApp(tk.Tk):
         refresh_preview: bool = True,
     ) -> None:
         self.refresh_session_tree(preferred_selection=preferred_selection)
+        self.sync_selected_parameter_series()
+        self.refresh_extrema_source_options()
         self.refresh_column_list()
         self.refresh_selected_series_list()
+        self.refresh_extrema_groups()
         self.configure_trim_controls(preserve_range=preserve_trim_range)
         if refresh_preview:
             self.schedule_preview_refresh(immediate=True)
+
+    def _on_extrema_enabled_changed(self, *_args) -> None:
+        if self._updating_extrema_controls:
+            return
+        self.refresh_extrema_source_options()
+        self.refresh_extrema_groups()
+        self.schedule_preview_refresh(immediate=True)
+
+    def _on_extrema_setting_changed(self, *_args) -> None:
+        if self._updating_extrema_controls:
+            return
+        self.refresh_extrema_groups()
+        self.schedule_preview_refresh(immediate=True)
+
+    def refresh_extrema_source_options(self) -> None:
+        self.extrema_source_columns = self.get_shared_parameter_columns()
+        source_labels = [column.display_name for column in self.extrema_source_columns]
+        current_source_label = self.extrema_source_var.get().strip()
+        next_source_label = current_source_label if current_source_label in source_labels else ""
+        if not next_source_label and source_labels:
+            next_source_label = source_labels[0]
+
+        self._updating_extrema_controls = True
+        try:
+            if self.extrema_source_combobox is not None:
+                self.extrema_source_combobox.configure(values=source_labels)
+                self.extrema_source_combobox.configure(
+                    state="readonly" if self.extrema_enabled_var.get() and source_labels else tk.DISABLED
+                )
+            self.extrema_source_var.set(next_source_label)
+        finally:
+            self._updating_extrema_controls = False
+
+    def get_selected_extrema_source_column(self) -> SensorColumn | None:
+        selected_label = self.extrema_source_var.get().strip()
+        for column in self.extrema_source_columns:
+            if column.display_name == selected_label:
+                return column
+        return None
+
+    def build_extrema_detection_config(self) -> ExtremaDetectionConfig | None:
+        if not self.extrema_enabled_var.get():
+            return None
+
+        source_column = self.get_selected_extrema_source_column()
+        if source_column is None:
+            return None
+
+        render_sessions = self.get_render_sessions()
+        source_series_keys = tuple(
+            SeriesKey(session.session_id, source_column.index)
+            for session in render_sessions
+            if any(column.index == source_column.index for column in session.data.columns)
+        )
+        if not source_series_keys:
+            return None
+
+        return ExtremaDetectionConfig(
+            enabled=True,
+            source_series_keys=source_series_keys,
+            mode=EXTREMA_MODE_CHOICES.get(self.extrema_mode_var.get(), "both"),
+            min_distance_seconds=self.parse_nonnegative_float(self.extrema_min_distance_var.get(), "最小间距(秒)"),
+            min_prominence=self.parse_nonnegative_float(self.extrema_min_prominence_var.get(), "最小突出度"),
+            smoothing_window=self.parse_min_int(self.extrema_smoothing_window_var.get(), "平滑窗口", minimum=1),
+            alignment_tolerance_seconds=self.parse_nonnegative_float(
+                self.extrema_alignment_tolerance_var.get(),
+                "分组容差(秒)",
+            ),
+            use_secondary_axis=True,
+        )
+
+    def get_selected_extrema_point_key(self) -> ExtremaPointKey | None:
+        if self.extrema_group_tree is None:
+            return None
+        selected_rows = self.extrema_group_tree.selection()
+        if len(selected_rows) != 1:
+            return None
+        return self.extrema_point_key_by_row_id.get(selected_rows[0])
+
+    def get_extrema_point_context(
+        self,
+        point_key: ExtremaPointKey,
+    ) -> tuple[AlignedExtremaGroup, object] | None:
+        for group in self.detected_extrema_groups:
+            if group.group_id != point_key.group_id:
+                continue
+            for member in group.members:
+                if member.key == point_key.key:
+                    return group, member
+        return None
+
+    def refresh_extrema_groups(self) -> None:
+        preferred_point_key = self.get_selected_extrema_point_key() or self.selected_extrema_point_key
+        try:
+            extrema_config = self.build_extrema_detection_config()
+        except ValueError as exc:
+            self.detected_extrema_groups = ()
+            self.extrema_assignments.clear()
+            self.extrema_point_colors.clear()
+            self.refresh_extrema_group_tree(preferred_point_key=None)
+            self.status_var.set(f"峰谷重算失败：{exc}")
+            return
+
+        if extrema_config is None:
+            self.detected_extrema_groups = ()
+            self.extrema_assignments.clear()
+            self.extrema_point_colors.clear()
+            self.refresh_extrema_group_tree(preferred_point_key=None)
+            return
+
+        detected_extrema = detect_extrema_for_sessions(self.get_render_sessions(), extrema_config)
+        self.detected_extrema_groups = group_aligned_extrema(
+            detected_extrema,
+            alignment_tolerance_seconds=extrema_config.alignment_tolerance_seconds,
+            reference_session_id=next(
+                (session.session_id for session in self.get_render_sessions() if session.is_reference),
+                None,
+            ),
+        )
+        valid_point_keys = {
+            ExtremaPointKey(group.group_id, member.key)
+            for group in self.detected_extrema_groups
+            for member in group.members
+        }
+        self.extrema_assignments = {
+            point_key: assigned_value
+            for point_key, assigned_value in self.extrema_assignments.items()
+            if point_key in valid_point_keys
+        }
+        self.extrema_point_colors = {
+            point_key: color_text
+            for point_key, color_text in self.extrema_point_colors.items()
+            if point_key in valid_point_keys
+        }
+        self.refresh_extrema_group_tree(preferred_point_key=preferred_point_key)
+
+    def refresh_extrema_group_tree(self, *, preferred_point_key: ExtremaPointKey | None) -> None:
+        if self.extrema_group_tree is None:
+            return
+
+        self.extrema_group_tree.delete(*self.extrema_group_tree.get_children())
+        self.extrema_point_key_by_row_id.clear()
+        selected_row_id: str | None = None
+
+        for group in self.detected_extrema_groups:
+            for member in group.members:
+                point_key = ExtremaPointKey(group.group_id, member.key)
+                row_id = f"{group.group_id}|{member.key.session_id}|{member.key.column_index}"
+                self.extrema_point_key_by_row_id[row_id] = point_key
+                session = self.get_session_by_id(member.key.session_id)
+                session_alias = session.alias if session is not None else member.key.session_id
+                assigned_value = self.extrema_assignments.get(point_key)
+                color_text = self.extrema_point_colors.get(point_key, "")
+                self.extrema_group_tree.insert(
+                    "",
+                    tk.END,
+                    iid=row_id,
+                    values=(
+                        group.group_id,
+                        EXTREMA_KIND_LABELS.get(group.kind, group.kind),
+                        format_compact_elapsed_time(group.anchor_seconds),
+                        session_alias,
+                        f"{float(member.source_value):.3f}",
+                        "" if assigned_value is None else f"{float(assigned_value):.3f}",
+                        color_text.upper(),
+                    ),
+                )
+                if preferred_point_key == point_key:
+                    selected_row_id = row_id
+
+        if selected_row_id is not None and self.extrema_group_tree.exists(selected_row_id):
+            self.extrema_group_tree.selection_set(selected_row_id)
+            self.extrema_group_tree.focus(selected_row_id)
+        elif self.extrema_group_tree.selection():
+            self.extrema_group_tree.selection_remove(self.extrema_group_tree.selection())
+
+        self.sync_extrema_editor()
+
+    def on_extrema_group_selection_changed(self, _event=None) -> None:
+        self.sync_extrema_editor()
+
+    def sync_extrema_editor(self) -> None:
+        point_key = self.get_selected_extrema_point_key()
+        self.selected_extrema_point_key = point_key
+        if point_key is None:
+            self.extrema_selected_group_var.set("--")
+            self.extrema_selected_file_var.set("--")
+            self.extrema_selected_source_value_var.set("--")
+            self.extrema_assignment_value_var.set("")
+            self.extrema_point_color_var.set("")
+            return
+
+        context = self.get_extrema_point_context(point_key)
+        if context is None:
+            self.extrema_selected_group_var.set("--")
+            self.extrema_selected_file_var.set("--")
+            self.extrema_selected_source_value_var.set("--")
+            self.extrema_assignment_value_var.set("")
+            self.extrema_point_color_var.set("")
+            return
+
+        group, member = context
+        session = self.get_session_by_id(member.key.session_id)
+        session_alias = session.alias if session is not None else member.key.session_id
+        self.extrema_selected_group_var.set(group.group_id)
+        self.extrema_selected_file_var.set(session_alias)
+        self.extrema_selected_source_value_var.set(f"{float(member.source_value):.3f}")
+        assigned_value = self.extrema_assignments.get(point_key)
+        self.extrema_assignment_value_var.set("" if assigned_value is None else f"{float(assigned_value):.3f}")
+        self.extrema_point_color_var.set(self.extrema_point_colors.get(point_key, "").removeprefix("#").upper())
+
+    def apply_extrema_assignment(self) -> None:
+        point_key = self.get_selected_extrema_point_key()
+        if point_key is None:
+            messagebox.showinfo("未选择峰谷点", "请先在峰谷映射列表中选择一个峰谷点。")
+            return
+
+        try:
+            assigned_value = self.parse_float(self.extrema_assignment_value_var.get(), "赋值")
+        except ValueError as exc:
+            messagebox.showerror("赋值格式无效", str(exc))
+            self.sync_extrema_editor()
+            return
+
+        self.extrema_assignments[point_key] = assigned_value
+        self.refresh_extrema_group_tree(preferred_point_key=point_key)
+        self.schedule_preview_refresh(immediate=True)
+
+    def clear_selected_extrema_assignment(self) -> None:
+        point_key = self.get_selected_extrema_point_key()
+        if point_key is None:
+            return
+
+        if self.extrema_assignments.pop(point_key, None) is None:
+            return
+
+        self.refresh_extrema_group_tree(preferred_point_key=point_key)
+        self.schedule_preview_refresh(immediate=True)
+
+    def clear_extrema_assignments(self) -> None:
+        if not self.extrema_assignments:
+            return
+
+        preferred_point_key = self.get_selected_extrema_point_key()
+        self.extrema_assignments.clear()
+        self.refresh_extrema_group_tree(preferred_point_key=preferred_point_key)
+        self.schedule_preview_refresh(immediate=True)
+
+    def apply_extrema_point_color(self) -> None:
+        point_key = self.get_selected_extrema_point_key()
+        if point_key is None:
+            messagebox.showinfo("未选择峰谷点", "请先在峰谷映射列表中选择一个峰谷点。")
+            return
+
+        try:
+            selected_color = self.normalize_hex_color(self.extrema_point_color_var.get())
+        except ValueError as exc:
+            messagebox.showerror("颜色格式无效", str(exc))
+            self.sync_extrema_editor()
+            return
+
+        self.extrema_point_color_var.set(selected_color.removeprefix("#").upper())
+        self.extrema_point_colors[point_key] = selected_color
+        self.refresh_extrema_group_tree(preferred_point_key=point_key)
+        self.schedule_preview_refresh(immediate=True)
+
+    def clear_selected_extrema_point_color(self) -> None:
+        point_key = self.get_selected_extrema_point_key()
+        if point_key is None:
+            return
+
+        if self.extrema_point_colors.pop(point_key, None) is None:
+            return
+
+        self.refresh_extrema_group_tree(preferred_point_key=point_key)
+        self.schedule_preview_refresh(immediate=True)
+
+    def clear_extrema_point_colors(self) -> None:
+        if not self.extrema_point_colors:
+            return
+
+        preferred_point_key = self.get_selected_extrema_point_key()
+        self.extrema_point_colors.clear()
+        self.refresh_extrema_group_tree(preferred_point_key=preferred_point_key)
+        self.schedule_preview_refresh(immediate=True)
 
     def add_csv_files(self, file_paths: Sequence[str]) -> None:
         normalized_paths: list[str] = []
@@ -1191,6 +1758,26 @@ class HWiNFOPlotterApp(tk.Tk):
             preserve_trim_range=True,
         )
         self.status_var.set(f"已将 {selected_session.alias} 设为基准文件。")
+
+    def apply_selected_session_alias(self, _event=None) -> str | None:
+        if self._updating_session_editor:
+            return None
+
+        selected_session = self.get_selected_session()
+        if selected_session is None:
+            return None
+
+        alias = self.session_alias_var.get().strip() or selected_session.data.source_path.stem
+        self.sessions = [
+            replace(session, alias=alias) if session.session_id == selected_session.session_id else session
+            for session in self.sessions
+        ]
+        self.refresh_after_session_change(
+            preferred_selection=[selected_session.session_id],
+            preserve_trim_range=True,
+        )
+        self.status_var.set(f"已更新 {alias} 的别名。")
+        return "break"
 
     def apply_selected_session_details(self, _event=None) -> str | None:
         if self._updating_session_editor:
@@ -1805,6 +2392,8 @@ class HWiNFOPlotterApp(tk.Tk):
             for session in self.sessions
         ]
         self.refresh_session_tree(preferred_selection=preferred_selection)
+        self.refresh_extrema_source_options()
+        self.refresh_extrema_groups()
         self.configure_trim_controls(preserve_range=True)
 
     def _schedule_timeline_preview_refresh(self, *, immediate: bool = False) -> None:
@@ -2000,46 +2589,46 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def refresh_column_list(self) -> None:
         self.column_listbox.delete(0, tk.END)
-        self.visible_series_descriptors.clear()
+        self.visible_parameter_columns.clear()
 
         if not self.sessions:
             self.selection_var.set("当前未选择参数")
             return
 
         keyword = self.filter_var.get().strip().lower()
-        for descriptor in build_series_descriptors(self.get_render_sessions()):
-            haystack = (
-                f"{descriptor.session_alias} {descriptor.column_display_name} {descriptor.legend_label}"
-            ).lower()
+        selected_parameter_indices = set(self.get_selected_parameter_indices())
+        for column in self.get_shared_parameter_columns():
+            haystack = f"{column.name} {column.display_name}".lower()
             if keyword and keyword not in haystack:
                 continue
 
-            listbox_index = len(self.visible_series_descriptors)
-            self.visible_series_descriptors.append(descriptor)
-            self.column_listbox.insert(tk.END, self.format_series_list_label(descriptor))
-            selected_color = self.series_colors.get(descriptor.key)
-            if selected_color:
-                self.column_listbox.itemconfig(listbox_index, foreground=selected_color)
+            self.visible_parameter_columns.append(column)
+            self.column_listbox.insert(tk.END, column.display_name)
 
-        for listbox_index, descriptor in enumerate(self.visible_series_descriptors):
-            if descriptor.key in self.selected_series_keys:
+        for listbox_index, column in enumerate(self.visible_parameter_columns):
+            if column.index in selected_parameter_indices:
                 self.column_listbox.selection_set(listbox_index)
 
         self.update_selection_label()
 
     def on_column_selection_changed(self, _event=None) -> None:
-        visible_series_keys = {descriptor.key for descriptor in self.visible_series_descriptors}
-        self.selected_series_keys -= visible_series_keys
+        visible_parameter_indices = {column.index for column in self.visible_parameter_columns}
+        selected_parameter_indices = set(self.get_selected_parameter_indices())
+        selected_parameter_indices -= visible_parameter_indices
 
         for selected_position in self.column_listbox.curselection():
-            self.selected_series_keys.add(self.visible_series_descriptors[selected_position].key)
+            if selected_position >= len(self.visible_parameter_columns):
+                continue
+            selected_parameter_indices.add(self.visible_parameter_columns[selected_position].index)
+
+        self.selected_series_keys = self.expand_series_keys_for_parameter_indices(selected_parameter_indices)
 
         self.update_selection_label()
         self.refresh_selected_series_list()
         self.schedule_preview_refresh()
 
     def update_selection_label(self) -> None:
-        count = len(self.selected_series_keys)
+        count = len(self.get_selected_parameter_indices())
         if count == 0:
             self.selection_var.set("当前未选择参数")
         else:
@@ -2137,11 +2726,13 @@ class HWiNFOPlotterApp(tk.Tk):
             self.schedule_preview_refresh(immediate=True)
 
     def select_all_visible(self) -> None:
-        if not self.visible_series_descriptors:
+        if not self.visible_parameter_columns:
             return
 
         self.column_listbox.selection_set(0, tk.END)
-        self.selected_series_keys.update(descriptor.key for descriptor in self.visible_series_descriptors)
+        selected_parameter_indices = set(self.get_selected_parameter_indices())
+        selected_parameter_indices.update(column.index for column in self.visible_parameter_columns)
+        self.selected_series_keys = self.expand_series_keys_for_parameter_indices(selected_parameter_indices)
         self.update_selection_label()
         self.refresh_selected_series_list()
         self.schedule_preview_refresh()
@@ -2265,6 +2856,7 @@ class HWiNFOPlotterApp(tk.Tk):
         render_sessions = self.get_render_sessions()
         if not render_sessions:
             raise ValueError("请先加载一个或多个 CSV 文件。")
+        extrema_config = self.build_extrema_detection_config()
 
         return build_comparison_figure(
             render_sessions,
@@ -2275,6 +2867,9 @@ class HWiNFOPlotterApp(tk.Tk):
             style=style,
             color_by_series=color_by_series,
             visible_range_seconds=visible_range_seconds,
+            extrema_config=extrema_config,
+            extrema_assignments=dict(self.extrema_assignments),
+            extrema_point_colors=dict(self.extrema_point_colors),
         )
 
     def build_preview_request(self) -> PreviewRenderRequest:
@@ -2290,6 +2885,7 @@ class HWiNFOPlotterApp(tk.Tk):
         render_sessions = self.get_render_sessions()
         if not render_sessions:
             raise ValueError("请先加载一个或多个 CSV 文件。")
+        extrema_config = self.build_extrema_detection_config()
 
         self.preview_request_id += 1
         self.active_preview_request_id = self.preview_request_id
@@ -2303,6 +2899,9 @@ class HWiNFOPlotterApp(tk.Tk):
             style=style,
             color_by_series=color_by_series,
             visible_range_seconds=visible_range_seconds,
+            extrema_config=extrema_config,
+            extrema_assignments=dict(self.extrema_assignments),
+            extrema_point_colors=dict(self.extrema_point_colors),
         )
 
     def collect_render_options(
@@ -2398,6 +2997,9 @@ class HWiNFOPlotterApp(tk.Tk):
                     style=preview_request.style,
                     color_by_series=preview_request.color_by_series,
                     visible_range_seconds=preview_request.visible_range_seconds,
+                    extrema_config=preview_request.extrema_config,
+                    extrema_assignments=preview_request.extrema_assignments,
+                    extrema_point_colors=preview_request.extrema_point_colors,
                 )
                 png_bytes = render_figure_png_bytes(figure)
             except Exception as exc:
@@ -2688,6 +3290,23 @@ class HWiNFOPlotterApp(tk.Tk):
             return float(cleaned_value)
         except ValueError as exc:
             raise ValueError(f"{field_name} 必须是数字。") from exc
+
+    @classmethod
+    def parse_nonnegative_float(cls, value: str, field_name: str) -> float:
+        parsed = cls.parse_float(value, field_name)
+        if parsed < 0:
+            raise ValueError(f"{field_name} 不能小于 0。")
+        return parsed
+
+    @staticmethod
+    def parse_min_int(value: str, field_name: str, *, minimum: int) -> int:
+        try:
+            parsed = int(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"{field_name} 必须是整数。") from exc
+        if parsed < minimum:
+            raise ValueError(f"{field_name} 必须大于等于 {minimum}。")
+        return parsed
 
     @staticmethod
     def normalize_hex_color(value: str) -> str:

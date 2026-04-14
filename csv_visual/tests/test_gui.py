@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import tkinter as tk
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,6 +53,47 @@ def build_session(
         session_id=session_id,
         alias=alias,
         data=build_synthetic_data(f"{alias}.csv", base_value=base_value),
+        offset_seconds=offset_seconds,
+        is_reference=is_reference,
+        source_trim_start_seconds=source_trim_start_seconds,
+        source_trim_end_seconds=source_trim_end_seconds,
+    )
+
+
+def build_extrema_session(
+    session_id: str,
+    alias: str,
+    cpu_values: list[float],
+    *,
+    offset_seconds: float = 0.0,
+    is_reference: bool = False,
+    source_trim_start_seconds: float = 0.0,
+    source_trim_end_seconds: float | None = None,
+) -> LoadedCsvSession:
+    base_time = datetime(2026, 4, 13, 12, 0, 0)
+    data = HWiNFOData(
+        source_path=Path(f"{alias}.csv"),
+        encoding="utf-8",
+        headers=["Date", "Time", "CPU", "GPU"],
+        columns=[
+            SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU"),
+            SensorColumn(index=3, name="GPU", occurrence=1, display_name="[003] GPU"),
+        ],
+        timestamps=[base_time + timedelta(seconds=index) for index in range(len(cpu_values))],
+        rows=[
+            [
+                "13/04/2026",
+                f"12:00:{index:02d}",
+                f"{float(cpu_value):.2f}",
+                "0.0",
+            ]
+            for index, cpu_value in enumerate(cpu_values)
+        ],
+    )
+    return LoadedCsvSession(
+        session_id=session_id,
+        alias=alias,
+        data=data,
         offset_seconds=offset_seconds,
         is_reference=is_reference,
         source_trim_start_seconds=source_trim_start_seconds,
@@ -217,11 +259,11 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_file_management_tree_is_compact_and_has_no_offset_editors(self) -> None:
+    def test_file_management_tree_has_alias_editor_without_offset_editor(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             self.assertEqual(app.session_tree.cget("columns"), ("filename", "alias", "duration"))
-            self.assertIsNone(app.session_alias_entry)
+            self.assertIsNotNone(app.session_alias_entry)
             self.assertIsNone(app.session_offset_entry)
         finally:
             app.on_close()
@@ -501,7 +543,7 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_add_csv_files_loads_multiple_sessions_and_flattens_series(self) -> None:
+    def test_add_csv_files_loads_multiple_sessions_and_shows_shared_parameters(self) -> None:
         data_a = build_synthetic_data("RunA.csv", base_value=1.0)
         data_b = build_synthetic_data("RunB.csv", base_value=5.0)
 
@@ -527,13 +569,71 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertFalse(app.sessions[1].is_reference)
             self.assertEqual(
                 app.column_listbox.get(0, "end"),
+                ("[002] CPU", "[003] GPU"),
+            )
+        finally:
+            app.on_close()
+
+    def test_multi_file_parameter_selection_applies_to_all_loaded_sessions(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session("run_a", "RunA", is_reference=True),
+                build_session("run_b", "RunB", base_value=5.0),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+
+            self.assertEqual(app.column_listbox.get(0, "end"), ("[002] CPU", "[003] GPU"))
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.column_listbox.selection_set(0)
+                app.on_column_selection_changed()
+
+            self.assertEqual(
+                app.selected_series_keys,
+                {
+                    SeriesKey("run_a", 2),
+                    SeriesKey("run_b", 2),
+                },
+            )
+            self.assertEqual(app.selection_var.get(), "当前已选择 1 个参数")
+            self.assertEqual(
+                app.selected_series_listbox.get(0, "end"),
                 (
                     "[RunA] [002] CPU",
-                    "[RunA] [003] GPU",
                     "[RunB] [002] CPU",
-                    "[RunB] [003] GPU",
                 ),
             )
+            mock_refresh.assert_called_once_with()
+        finally:
+            app.on_close()
+
+    def test_apply_selected_session_alias_updates_selected_file(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+
+            app.session_alias_var.set("Gaming Run")
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                result = app.apply_selected_session_alias()
+
+            self.assertEqual(result, "break")
+            self.assertEqual(app.sessions[0].alias, "Gaming Run")
+            self.assertEqual(app.session_tree.item("run_a", "values"), ("RunA.csv", "Gaming Run", "00:00:03"))
+            self.assertEqual(app.status_var.get(), "已更新 Gaming Run 的别名。")
+            mock_refresh.assert_called_once_with(immediate=True)
         finally:
             app.on_close()
 
@@ -578,7 +678,7 @@ class GuiBehaviorTests(unittest.TestCase):
             app.remove_selected_sessions()
 
             self.assertEqual([session.session_id for session in app.sessions], ["run_a"])
-            self.assertEqual(app.selected_series_keys, set())
+            self.assertEqual(app.selected_series_keys, {SeriesKey("run_a", 2)})
             self.assertEqual(app.series_colors, {})
         finally:
             app.on_close()
@@ -655,6 +755,206 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.style.legend_text_color, "#555555")
             self.assertEqual(preview_request.style.font_family, "Microsoft YaHei")
             self.assertIsNone(preview_request.visible_range_seconds)
+            self.assertIsNone(preview_request.extrema_config)
+            self.assertEqual(preview_request.extrema_assignments, {})
+            self.assertEqual(preview_request.extrema_point_colors, {})
+        finally:
+            app.on_close()
+
+    def test_extrema_controls_offer_shared_sources_when_enabled(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_extrema_session("run_a", "RunA", [0.0, 4.0, 0.0, 5.0, 0.0], is_reference=True),
+                build_extrema_session("run_b", "RunB", [0.0, 4.0, 0.0, 5.0, 0.0]),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+
+            app.extrema_enabled_var.set(True)
+
+            self.assertEqual(tuple(app.extrema_source_combobox.cget("values")), ("[002] CPU", "[003] GPU"))
+            self.assertEqual(str(app.extrema_source_combobox.cget("state")), "readonly")
+            self.assertEqual(app.extrema_source_var.get(), "[002] CPU")
+        finally:
+            app.on_close()
+
+    def test_extrema_setting_change_recomputes_groups(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_extrema_session("run_a", "RunA", [0.0, 4.0, 0.0, 5.0, 0.0], is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.extrema_mode_var.set("峰")
+
+            app.extrema_enabled_var.set(True)
+            self.assertEqual(len(app.detected_extrema_groups), 2)
+
+            app.extrema_min_distance_var.set("5.0")
+
+            self.assertEqual(len(app.detected_extrema_groups), 1)
+        finally:
+            app.on_close()
+
+    def test_apply_extrema_assignment_updates_preview_request(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_extrema_session("run_a", "RunA", [0.0, 4.0, 0.0, 5.0, 0.0], is_reference=True)]
+            app.selected_series_keys = {SeriesKey("run_a", 2)}
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.extrema_enabled_var.set(True)
+
+            row_id = app.extrema_group_tree.get_children()[0]
+            point_key = app.extrema_point_key_by_row_id[row_id]
+            app.extrema_group_tree.selection_set(row_id)
+            app.on_extrema_group_selection_changed()
+            app.extrema_assignment_value_var.set("8.5")
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.apply_extrema_assignment()
+
+            self.assertEqual(app.extrema_assignments[point_key], 8.5)
+            preview_request = app.build_preview_request()
+            self.assertEqual(preview_request.extrema_assignments[point_key], 8.5)
+            mock_refresh.assert_called_once_with(immediate=True)
+        finally:
+            app.on_close()
+
+    def test_apply_extrema_point_color_enters_preview_request(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_extrema_session("run_a", "RunA", [0.0, 4.0, 0.0], is_reference=True)]
+            app.selected_series_keys = {SeriesKey("run_a", 2)}
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.extrema_enabled_var.set(True)
+
+            row_id = app.extrema_group_tree.get_children()[0]
+            point_key = app.extrema_point_key_by_row_id[row_id]
+            app.extrema_group_tree.selection_set(row_id)
+            app.on_extrema_group_selection_changed()
+            app.extrema_point_color_var.set("66CCFF")
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.apply_extrema_point_color()
+
+            self.assertEqual(app.extrema_point_colors[point_key], "#66ccff")
+            preview_request = app.build_preview_request()
+            self.assertEqual(preview_request.extrema_point_colors[point_key], "#66ccff")
+            mock_refresh.assert_called_once_with(immediate=True)
+        finally:
+            app.on_close()
+
+    def test_multi_file_same_group_keeps_different_extrema_assignments(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_extrema_session("run_a", "RunA", [0.0, 4.0, 0.0, 5.0, 0.0], is_reference=True),
+                build_extrema_session("run_b", "RunB", [0.0, 4.0, 0.0, 5.0, 0.0]),
+            ]
+            app.selected_series_keys = {SeriesKey("run_a", 2), SeriesKey("run_b", 2)}
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.extrema_enabled_var.set(True)
+
+            first_group_id = app.extrema_group_tree.item(app.extrema_group_tree.get_children()[0], "values")[0]
+            first_group_rows = {
+                app.extrema_group_tree.item(row_id, "values")[3]: row_id
+                for row_id in app.extrema_group_tree.get_children()
+                if app.extrema_group_tree.item(row_id, "values")[0] == first_group_id
+            }
+            row_a = first_group_rows["RunA"]
+            row_b = first_group_rows["RunB"]
+            point_key_a = app.extrema_point_key_by_row_id[row_a]
+            point_key_b = app.extrema_point_key_by_row_id[row_b]
+
+            app.extrema_group_tree.selection_set(row_a)
+            app.on_extrema_group_selection_changed()
+            app.extrema_assignment_value_var.set("10")
+            app.apply_extrema_assignment()
+
+            app.extrema_group_tree.selection_set(row_b)
+            app.on_extrema_group_selection_changed()
+            app.extrema_assignment_value_var.set("20")
+            app.apply_extrema_assignment()
+
+            preview_request = app.build_preview_request()
+            self.assertEqual(preview_request.extrema_assignments[point_key_a], 10.0)
+            self.assertEqual(preview_request.extrema_assignments[point_key_b], 20.0)
+        finally:
+            app.on_close()
+
+    def test_offset_change_refreshes_extrema_groups(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_extrema_session("run_a", "RunA", [0.0, 5.0, 0.0, 0.0], is_reference=True),
+                build_extrema_session("run_b", "RunB", [0.0, 0.0, 5.0, 0.0]),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a", "run_b"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.extrema_enabled_var.set(True)
+            app.extrema_alignment_tolerance_var.set("0.25")
+
+            self.assertEqual(len(app.detected_extrema_groups), 2)
+
+            app._apply_timeline_session_updates(
+                {
+                    "run_b": replace(app.sessions[1], offset_seconds=-1.0),
+                }
+            )
+
+            self.assertEqual(len(app.detected_extrema_groups), 1)
+        finally:
+            app.on_close()
+
+    def test_trim_change_refreshes_extrema_groups(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_extrema_session("run_a", "RunA", [0.0, 4.0, 0.0, 5.0, 0.0], is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.extrema_mode_var.set("峰")
+            app.extrema_enabled_var.set(True)
+
+            self.assertEqual(len(app.detected_extrema_groups), 2)
+
+            app._apply_timeline_session_updates(
+                {
+                    "run_a": replace(app.sessions[0], source_trim_end_seconds=2.0),
+                }
+            )
+
+            self.assertEqual(len(app.detected_extrema_groups), 1)
         finally:
             app.on_close()
 
