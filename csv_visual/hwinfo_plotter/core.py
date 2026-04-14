@@ -91,6 +91,27 @@ class ChartStyle:
     font_family: str | None = None
 
 
+@dataclass(frozen=True)
+class SeriesKey:
+    session_id: str
+    column_index: int
+
+
+@dataclass(frozen=True)
+class SeriesDescriptor:
+    key: SeriesKey
+    session_alias: str
+    column_display_name: str
+    legend_label: str
+
+
+@dataclass(frozen=True)
+class VisibleSeries:
+    descriptor: SeriesDescriptor
+    x_values: tuple[float, ...]
+    y_values: tuple[float, ...]
+
+
 @dataclass
 class HWiNFOData:
     source_path: Path
@@ -175,6 +196,312 @@ class HWiNFOData:
                 for column_index in self._column_indices
             }
             self._all_series_preloaded = True
+
+
+@dataclass(frozen=True)
+class LoadedCsvSession:
+    session_id: str
+    alias: str
+    data: HWiNFOData
+    offset_seconds: float = 0.0
+    is_reference: bool = False
+    is_visible: bool = True
+    preload_ready: bool = False
+    preload_error: str | None = None
+
+
+def build_series_descriptors(sessions: Sequence[LoadedCsvSession]) -> list[SeriesDescriptor]:
+    descriptors: list[SeriesDescriptor] = []
+    for session in sessions:
+        if not session.is_visible:
+            continue
+
+        session_alias = session.alias.strip() or session.data.source_path.stem
+        for column in session.data.columns:
+            column_display_name = column.display_name
+            descriptors.append(
+                SeriesDescriptor(
+                    key=SeriesKey(session_id=session.session_id, column_index=column.index),
+                    session_alias=session_alias,
+                    column_display_name=column_display_name,
+                    legend_label=f"{session_alias} · {column_display_name}",
+                )
+            )
+
+    return descriptors
+
+
+def align_series_x_values(x_values: Sequence[float], offset_seconds: float) -> list[float]:
+    resolved_offset = float(offset_seconds)
+    return [float(x_value) + resolved_offset for x_value in x_values]
+
+
+def compute_global_time_bounds(sessions: Sequence[LoadedCsvSession]) -> tuple[float, float]:
+    visible_sessions = [session for session in sessions if session.is_visible and session.data.elapsed_seconds]
+    if not visible_sessions:
+        return 0.0, 1.0
+
+    start_seconds = min(session.data.elapsed_seconds[0] + float(session.offset_seconds) for session in visible_sessions)
+    end_seconds = max(session.data.elapsed_seconds[-1] + float(session.offset_seconds) for session in visible_sessions)
+    if end_seconds <= start_seconds:
+        end_seconds = start_seconds + 1.0
+    return float(start_seconds), float(end_seconds)
+
+
+def normalize_offsets_for_reference(
+    sessions: Sequence[LoadedCsvSession],
+    reference_session_id: str,
+) -> tuple[LoadedCsvSession, ...]:
+    if not sessions:
+        return ()
+
+    reference_session = next(
+        (session for session in sessions if session.session_id == reference_session_id),
+        None,
+    )
+    if reference_session is None:
+        raise KeyError(f"未找到基准文件会话：{reference_session_id}")
+
+    reference_offset = float(reference_session.offset_seconds)
+    return tuple(
+        replace(
+            session,
+            offset_seconds=float(session.offset_seconds) - reference_offset,
+            is_reference=session.session_id == reference_session_id,
+        )
+        for session in sessions
+    )
+
+
+def resolve_comparison_visible_range_seconds(
+    sessions: Sequence[LoadedCsvSession],
+    visible_range_seconds: tuple[float, float] | None,
+) -> tuple[float, float]:
+    global_start_seconds, global_end_seconds = compute_global_time_bounds(sessions)
+    if visible_range_seconds is None:
+        return global_start_seconds, global_end_seconds
+
+    requested_start_seconds, requested_end_seconds = visible_range_seconds
+    start_seconds = max(global_start_seconds, float(requested_start_seconds))
+    end_seconds = min(global_end_seconds, float(requested_end_seconds))
+    if end_seconds <= start_seconds:
+        end_seconds = start_seconds + 1.0
+    return float(start_seconds), float(end_seconds)
+
+
+def filter_visible_series(
+    sessions: Sequence[LoadedCsvSession],
+    selected_series: Sequence[SeriesKey],
+    visible_range_seconds: tuple[float, float] | None = None,
+) -> list[VisibleSeries]:
+    visible_sessions = tuple(session for session in sessions if session.is_visible)
+    session_by_id = {session.session_id: session for session in visible_sessions}
+    descriptor_by_key = {descriptor.key: descriptor for descriptor in build_series_descriptors(visible_sessions)}
+    visible_start_seconds, visible_end_seconds = resolve_comparison_visible_range_seconds(
+        visible_sessions,
+        visible_range_seconds,
+    )
+
+    visible_series: list[VisibleSeries] = []
+    for series_key in selected_series:
+        session = session_by_id.get(series_key.session_id)
+        descriptor = descriptor_by_key.get(series_key)
+        if session is None or descriptor is None:
+            continue
+
+        x_values, y_values = session.data.extract_series(series_key.column_index)
+        if not y_values:
+            continue
+
+        aligned_x_values = align_series_x_values(x_values, session.offset_seconds)
+        trimmed_x_values, trimmed_y_values = trim_series_to_range(
+            aligned_x_values,
+            y_values,
+            visible_start_seconds,
+            visible_end_seconds,
+        )
+        if not trimmed_y_values:
+            continue
+
+        visible_series.append(
+            VisibleSeries(
+                descriptor=descriptor,
+                x_values=tuple(trimmed_x_values),
+                y_values=tuple(trimmed_y_values),
+            )
+        )
+
+    return visible_series
+
+
+def build_comparison_figure(
+    sessions: Sequence[LoadedCsvSession],
+    selected_series: Sequence[SeriesKey],
+    title: str | None = None,
+    width_px: int = 1920,
+    height_px: int = 1080,
+    dpi: int = 160,
+    style: ChartStyle | None = None,
+    color_by_series: Mapping[SeriesKey, str] | None = None,
+    visible_range_seconds: tuple[float, float] | None = None,
+) -> Figure:
+    visible_sessions = tuple(session for session in sessions if session.is_visible)
+    if not visible_sessions:
+        raise ValueError("请至少加载一个 CSV 文件。")
+    if not selected_series:
+        raise ValueError("至少需要选择一个参数。")
+    if width_px < 200 or height_px < 200:
+        raise ValueError("输出尺寸过小，请至少使用 200 x 200。")
+    if dpi < 24:
+        raise ValueError("DPI 不能小于 24。")
+
+    chart_style = resolve_chart_style(style, title=title)
+    if chart_style.line_width <= 0:
+        raise ValueError("曲线线宽必须大于 0。")
+    if not 0 <= chart_style.grid_alpha <= 1:
+        raise ValueError("网格透明度必须在 0 到 1 之间。")
+    if chart_style.legend_location not in LEGEND_LOCATIONS:
+        raise ValueError(f"不支持的图例位置：{chart_style.legend_location}")
+    if not MIN_TIME_TICK_DENSITY <= chart_style.time_tick_density <= MAX_TIME_TICK_DENSITY:
+        raise ValueError(
+            f"时间刻度密度必须在 {MIN_TIME_TICK_DENSITY} 到 {MAX_TIME_TICK_DENSITY} 之间。"
+        )
+    if chart_style.fixed_time_interval_seconds is not None and chart_style.fixed_time_interval_seconds <= 0:
+        raise ValueError("固定时间刻度间隔必须大于 0。")
+    validate_chart_style_colors(chart_style)
+
+    visible_start_seconds, visible_end_seconds = resolve_comparison_visible_range_seconds(
+        visible_sessions,
+        visible_range_seconds,
+    )
+    visible_series = filter_visible_series(
+        visible_sessions,
+        selected_series,
+        visible_range_seconds=(visible_start_seconds, visible_end_seconds),
+    )
+    if not visible_series:
+        raise ValueError("所选参数在当前可视范围内没有可用于绘图的数值数据。")
+
+    configure_matplotlib_fonts()
+
+    figure = Figure(
+        figsize=(width_px / dpi, height_px / dpi),
+        dpi=dpi,
+        constrained_layout=True,
+    )
+    axis = figure.add_subplot(111)
+    figure.patch.set_alpha(0.0)
+    axis.set_facecolor("none")
+
+    configure_time_axis(axis, visible_start_seconds, visible_end_seconds, chart_style)
+
+    include_session_alias = len(visible_sessions) > 1
+    plotted_line_count = 0
+    for series in visible_series:
+        line_kwargs: dict[str, object] = {}
+        if color_by_series is not None:
+            selected_color = color_by_series.get(series.descriptor.key)
+            if selected_color:
+                line_kwargs["color"] = selected_color
+
+        axis.plot(
+            list(series.x_values),
+            list(series.y_values),
+            linewidth=chart_style.line_width,
+            label=(
+                series.descriptor.legend_label
+                if include_session_alias
+                else series.descriptor.column_display_name
+            ),
+            **line_kwargs,
+        )
+        plotted_line_count += 1
+
+    if chart_style.curve_only_mode:
+        axis.grid(False)
+    elif chart_style.show_grid:
+        grid_kwargs: dict[str, object] = {
+            "linestyle": "--",
+            "linewidth": 0.8,
+            "alpha": chart_style.grid_alpha,
+        }
+        if chart_style.grid_color:
+            grid_kwargs["color"] = chart_style.grid_color
+        axis.grid(True, **grid_kwargs)
+    else:
+        axis.grid(False)
+
+    font_family = normalize_font_family(chart_style.font_family)
+
+    if chart_style.title and not chart_style.curve_only_mode:
+        title_kwargs: dict[str, object] = {}
+        if font_family:
+            title_kwargs["fontfamily"] = font_family
+        axis.set_title(chart_style.title, **title_kwargs)
+
+    if chart_style.show_legend and plotted_line_count > 1 and not chart_style.curve_only_mode:
+        legend_kwargs: dict[str, object] = {
+            "frameon": False,
+            "loc": chart_style.legend_location,
+        }
+        if font_family:
+            legend_kwargs["prop"] = {
+                "family": font_family,
+                "size": 9,
+            }
+        else:
+            legend_kwargs["fontsize"] = 9
+        legend = axis.legend(**legend_kwargs)
+        if chart_style.legend_text_color:
+            for legend_text in legend.get_texts():
+                legend_text.set_color(chart_style.legend_text_color)
+
+    configure_axis_visibility(axis, chart_style)
+
+    return figure
+
+
+def build_comparison_output_name(
+    sessions: Sequence[LoadedCsvSession],
+    selected_series: Sequence[SeriesKey],
+) -> str:
+    session_by_id = {session.session_id: session for session in sessions}
+
+    selected_session_ids: list[str] = []
+    for series_key in selected_series:
+        if series_key.session_id not in session_by_id:
+            continue
+        if series_key.session_id not in selected_session_ids:
+            selected_session_ids.append(series_key.session_id)
+
+    selected_aliases = [
+        sanitize_filename((session_by_id[session_id].alias or session_by_id[session_id].data.source_path.stem).replace(" ", "_"))
+        for session_id in selected_session_ids
+    ]
+    if not selected_aliases:
+        selected_aliases = ["files"]
+
+    if len(selected_aliases) > 2:
+        file_part = f"{len(selected_aliases)}_files"
+    else:
+        file_part = "__".join(selected_aliases)
+
+    selected_column_names: list[str] = []
+    for series_key in selected_series:
+        session = session_by_id.get(series_key.session_id)
+        if session is None:
+            continue
+        column_name = sanitize_filename(session.data.column_for_index(series_key.column_index).name.replace(" ", "_"))
+        if column_name not in selected_column_names:
+            selected_column_names.append(column_name)
+
+    if len(selected_column_names) > 2:
+        metric_parts = selected_column_names[:2] + [f"and_{len(selected_column_names) - 2}_more"]
+    else:
+        metric_parts = selected_column_names
+    metric_part = "_".join(metric_parts) if metric_parts else "chart"
+
+    return f"compare__{file_part}__{metric_part}.png"
 
 
 def load_hwinfo_csv(path: Path | str, preload_numeric: bool = False) -> HWiNFOData:
@@ -721,12 +1048,14 @@ def build_time_locator(start_seconds: float, end_seconds: float, chart_style: Ch
 
 
 def format_elapsed_time(value: float, _position=None, *, omit_zero_hours: bool = False) -> str:
-    total_seconds = max(0, int(round(value)))
+    total_seconds = int(round(value))
+    sign_prefix = "-" if total_seconds < 0 else ""
+    total_seconds = abs(total_seconds)
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     if omit_zero_hours and hours == 0:
-        return f"{minutes:02d}:{seconds:02d}"
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return f"{sign_prefix}{minutes:02d}:{seconds:02d}"
+    return f"{sign_prefix}{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def format_compact_elapsed_time(value: float, position=None) -> str:

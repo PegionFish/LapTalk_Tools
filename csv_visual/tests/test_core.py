@@ -12,12 +12,18 @@ from matplotlib.colors import to_rgba
 from hwinfo_plotter.core import (
     ChartStyle,
     HWiNFOData,
+    LoadedCsvSession,
     SensorColumn,
+    SeriesKey,
+    build_comparison_figure,
+    build_comparison_output_name,
     build_figure,
     choose_best_decoding,
+    compute_global_time_bounds,
     decode_csv_bytes,
     format_compact_elapsed_time,
     load_hwinfo_csv,
+    normalize_offsets_for_reference,
     parse_numeric_value,
     render_figure_png_bytes,
     resolve_tick_interval_seconds,
@@ -64,6 +70,39 @@ def write_synthetic_hwinfo_csv(destination: Path) -> Path:
         writer.writerow(build_synthetic_csv_headers())
         writer.writerows(build_synthetic_csv_rows())
     return destination
+
+
+def build_loaded_session(
+    session_id: str,
+    alias: str,
+    *,
+    offset_seconds: float = 0.0,
+    is_reference: bool = False,
+) -> LoadedCsvSession:
+    base_time = datetime(2026, 4, 13, 12, 0, 0)
+    data = HWiNFOData(
+        source_path=Path(f"{alias}.csv"),
+        encoding="utf-8",
+        headers=["Date", "Time", "CPU", "GPU"],
+        columns=[
+            SensorColumn(index=2, name="CPU", occurrence=1, display_name="[002] CPU"),
+            SensorColumn(index=3, name="GPU", occurrence=1, display_name="[003] GPU"),
+        ],
+        timestamps=[base_time + timedelta(seconds=index) for index in range(4)],
+        rows=[
+            ["13/04/2026", "12:00:00", "1.0", "11.0"],
+            ["13/04/2026", "12:00:01", "2.0", "12.0"],
+            ["13/04/2026", "12:00:02", "3.0", "13.0"],
+            ["13/04/2026", "12:00:03", "4.0", "14.0"],
+        ],
+    )
+    return LoadedCsvSession(
+        session_id=session_id,
+        alias=alias,
+        data=data,
+        offset_seconds=offset_seconds,
+        is_reference=is_reference,
+    )
 
 
 class CoreSmokeTests(unittest.TestCase):
@@ -170,6 +209,7 @@ class CoreSmokeTests(unittest.TestCase):
     def test_compact_time_formatter_omits_zero_hour_component(self) -> None:
         self.assertEqual(format_compact_elapsed_time(65), "01:05")
         self.assertEqual(format_compact_elapsed_time(3605), "01:00:05")
+        self.assertEqual(format_compact_elapsed_time(-65), "-01:05")
 
     def test_decodes_utf8_bom_chinese_headers(self) -> None:
         raw_bytes = 'Date,Time,"提交虚拟内存 [MB]"\n'.encode("utf-8-sig")
@@ -499,6 +539,121 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(x_data[0], 2)
         self.assertEqual(x_data[-1], 6)
         self.assertEqual(axis.get_xlim(), (2, 6))
+
+    def test_compute_global_time_bounds_supports_negative_offsets(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB", offset_seconds=-5.0),
+        )
+
+        self.assertEqual(compute_global_time_bounds(sessions), (-5.0, 3.0))
+
+    def test_normalize_offsets_for_reference_preserves_relative_layout(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB", offset_seconds=8.0),
+            build_loaded_session("run_c", "RunC", offset_seconds=-3.0),
+        )
+
+        normalized_sessions = normalize_offsets_for_reference(sessions, "run_b")
+
+        self.assertEqual([session.offset_seconds for session in normalized_sessions], [-8.0, 0.0, -11.0])
+        self.assertEqual([session.is_reference for session in normalized_sessions], [False, True, False])
+
+    def test_build_comparison_figure_offsets_each_session_x_axis(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB", offset_seconds=5.0),
+        )
+
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+        )
+        axis = figure.axes[0]
+
+        self.assertEqual(list(axis.lines[0].get_xdata()), [0.0, 1.0, 2.0, 3.0])
+        self.assertEqual(list(axis.lines[1].get_xdata()), [5.0, 6.0, 7.0, 8.0])
+
+    def test_build_comparison_figure_uses_series_key_colors_without_collision(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB"),
+        )
+
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            color_by_series={
+                SeriesKey("run_a", 2): "#ff0000",
+                SeriesKey("run_b", 2): "#00ff00",
+            },
+        )
+        axis = figure.axes[0]
+
+        self.assertEqual(axis.lines[0].get_color(), "#ff0000")
+        self.assertEqual(axis.lines[1].get_color(), "#00ff00")
+
+    def test_build_comparison_figure_uses_alias_in_legend_for_same_column_name(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB"),
+        )
+
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+        )
+        axis = figure.axes[0]
+        legend = axis.get_legend()
+
+        self.assertIsNotNone(legend)
+        self.assertEqual(
+            [legend_text.get_text() for legend_text in legend.get_texts()],
+            ["RunA · [002] CPU", "RunB · [002] CPU"],
+        )
+
+    def test_build_comparison_figure_trims_global_visible_range(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB", offset_seconds=5.0),
+        )
+
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            visible_range_seconds=(2.0, 6.0),
+        )
+        axis = figure.axes[0]
+
+        self.assertEqual(list(axis.lines[0].get_xdata()), [2.0, 3.0])
+        self.assertEqual(list(axis.lines[1].get_xdata()), [5.0, 6.0])
+        self.assertEqual(axis.get_xlim(), (2.0, 6.0))
+
+    def test_build_comparison_output_name_uses_aliases_and_series_names(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB"),
+        )
+
+        output_name = build_comparison_output_name(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 3)],
+        )
+
+        self.assertEqual(output_name, "compare__RunA__RunB__CPU_GPU.png")
 
 
 if __name__ == "__main__":
