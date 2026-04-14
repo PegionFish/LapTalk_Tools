@@ -26,12 +26,16 @@ from .core import (
     build_comparison_output_name,
     build_series_descriptors,
     build_default_output_name,
+    compute_session_active_timeline_range,
+    compute_session_timeline_range,
     compute_global_time_bounds,
     format_elapsed_time,
+    format_compact_elapsed_time,
     list_available_font_families,
     load_hwinfo_csv,
     normalize_offsets_for_reference,
     render_figure_png_bytes,
+    resolve_session_source_trim_range,
     save_figure,
 )
 from .win32_image import get_png_dimensions, resize_png_bytes
@@ -290,6 +294,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_display_after_id: str | None = None
         self.file_drop_after_id: str | None = None
         self.process_results_after_id: str | None = None
+        self.default_csv_after_id: str | None = None
         self.preview_request_id = 0
         self.active_preview_request_id = 0
         self.pending_preview_request: PreviewRenderRequest | None = None
@@ -310,6 +315,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.filter_var = tk.StringVar()
         self.session_alias_var = tk.StringVar()
         self.session_offset_var = tk.StringVar(value="0")
+        self.session_source_trim_var = tk.StringVar(value="有效片段：--")
         self.title_var = tk.StringVar()
         self.width_var = tk.StringVar(value="1920")
         self.height_var = tk.StringVar(value="1080")
@@ -325,6 +331,17 @@ class HWiNFOPlotterApp(tk.Tk):
         self.trim_end_label_var = tk.StringVar(value="00:00:00")
         self.trim_duration_label_var = tk.StringVar(value="可视化范围：00:00:00 → 00:00:00")
         self._updating_trim_controls = False
+        self.timeline_zoom_var = tk.DoubleVar(value=1.0)
+        self.timeline_status_var = tk.StringVar(value="时间轴：添加 CSV 后可拖动 clip 对齐、拖动边缘裁剪。")
+        self.timeline_pixels_per_second = 12.0
+        self.timeline_start_seconds = 0.0
+        self.timeline_end_seconds = 60.0
+        self.timeline_drag_state: dict[str, object] | None = None
+        self.timeline_clip_item_by_session_id: dict[str, int] = {}
+        self.timeline_hit_regions: dict[int, tuple[str, str | None]] = {}
+        self.timeline_work_area_item_ids: set[int] = set()
+        self.timeline_preview_after_id: str | None = None
+        self._refreshing_timeline = False
         self._updating_curve_only_mode = False
         self._suppress_chart_option_refresh = False
         self.curve_only_mode_var = tk.BooleanVar(value=False)
@@ -372,6 +389,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_density_var.trace_add("write", self._on_time_density_changed)
         self.trim_start_var.trace_add("write", self._on_trim_start_changed)
         self.trim_end_var.trace_add("write", self._on_trim_end_changed)
+        self.timeline_zoom_var.trace_add("write", self._on_timeline_zoom_changed)
         self.update_time_density_label()
 
         self._build_layout()
@@ -381,40 +399,71 @@ class HWiNFOPlotterApp(tk.Tk):
 
         default_csv = self._find_default_csv()
         if default_csv:
-            self.after(100, lambda path=default_csv: self.add_csv_files((path,)))
+            self.default_csv_after_id = self.after(100, lambda path=default_csv: self.add_csv_files((path,)))
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=0)
 
-        file_frame = ttk.Labelframe(self, text="文件管理", padding=(14, 10, 14, 10))
-        file_frame.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 10))
-        file_frame.columnconfigure(0, weight=1)
-        file_frame.rowconfigure(0, weight=1)
+        self.root_paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        self.root_paned.grid(row=0, column=0, sticky="nsew", padx=14, pady=(14, 10))
 
-        session_table_frame = ttk.Frame(file_frame)
-        session_table_frame.grid(row=0, column=0, sticky="ew")
+        self.left_column = ttk.Frame(self.root_paned)
+        self.right_column = ttk.Frame(self.root_paned)
+        self.left_column.columnconfigure(0, weight=1)
+        self.left_column.rowconfigure(0, weight=0)
+        self.left_column.rowconfigure(1, weight=1)
+        self.right_column.columnconfigure(0, weight=1)
+        self.right_column.rowconfigure(0, weight=3)
+        self.right_column.rowconfigure(1, weight=1)
+
+        self.root_paned.add(self.left_column, weight=1)
+        self.root_paned.add(self.right_column, weight=3)
+
+        self._build_file_management_module(self.left_column)
+        self._build_parameter_and_chart_module(self.left_column)
+        self._build_preview_module(self.right_column)
+        self._build_time_editing_module(self.right_column)
+
+        status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor="w", padding=(10, 6))
+        status_bar.grid(row=1, column=0, sticky="ew")
+        self._bind_mousewheel_events()
+        self.refresh_timeline()
+
+    def _build_file_management_module(self, parent: tk.Misc) -> None:
+        self.file_management_module = ttk.Labelframe(parent, text="Module 1 | File Management", padding=(10, 8, 10, 8))
+        self.file_management_module.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        self.file_management_module.columnconfigure(0, weight=1)
+        self.file_management_module.rowconfigure(0, weight=1)
+
+        session_table_frame = ttk.Frame(self.file_management_module)
+        session_table_frame.grid(row=0, column=0, sticky="nsew")
         session_table_frame.columnconfigure(0, weight=1)
         session_table_frame.rowconfigure(0, weight=1)
 
         self.session_tree = ttk.Treeview(
             session_table_frame,
-            columns=("alias", "filename", "duration", "offset", "reference"),
+            columns=("alias", "filename", "duration", "offset", "active_trim", "reference", "preload"),
             show="headings",
             selectmode="extended",
-            height=5,
+            height=6,
         )
-        self.session_tree.heading("alias", text="别名")
-        self.session_tree.heading("filename", text="文件名")
-        self.session_tree.heading("duration", text="时长")
-        self.session_tree.heading("offset", text="偏移(秒)")
-        self.session_tree.heading("reference", text="基准")
-        self.session_tree.column("alias", width=200, anchor="w")
-        self.session_tree.column("filename", width=240, anchor="w")
-        self.session_tree.column("duration", width=90, anchor="center")
-        self.session_tree.column("offset", width=90, anchor="center")
-        self.session_tree.column("reference", width=60, anchor="center")
-        self.session_tree.grid(row=0, column=0, sticky="ew")
+        self.session_tree.heading("alias", text="Alias")
+        self.session_tree.heading("filename", text="File")
+        self.session_tree.heading("duration", text="Duration")
+        self.session_tree.heading("offset", text="Offset")
+        self.session_tree.heading("active_trim", text="Active Range")
+        self.session_tree.heading("reference", text="Ref")
+        self.session_tree.heading("preload", text="Cache")
+        self.session_tree.column("alias", width=130, anchor="w")
+        self.session_tree.column("filename", width=170, anchor="w")
+        self.session_tree.column("duration", width=80, anchor="center")
+        self.session_tree.column("offset", width=70, anchor="center")
+        self.session_tree.column("active_trim", width=150, anchor="center")
+        self.session_tree.column("reference", width=48, anchor="center")
+        self.session_tree.column("preload", width=58, anchor="center")
+        self.session_tree.grid(row=0, column=0, sticky="nsew")
         self.session_tree.bind("<<TreeviewSelect>>", self.on_session_selection_changed)
 
         session_scrollbar = ttk.Scrollbar(
@@ -425,33 +474,33 @@ class HWiNFOPlotterApp(tk.Tk):
         session_scrollbar.grid(row=0, column=1, sticky="ns")
         self.session_tree.configure(yscrollcommand=session_scrollbar.set)
 
-        file_button_row = ttk.Frame(file_frame)
+        file_button_row = ttk.Frame(self.file_management_module)
         file_button_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         file_button_row.columnconfigure((0, 1, 2, 3), weight=1)
 
-        ttk.Button(file_button_row, text="添加 CSV...", command=self.browse_csv).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ttk.Button(file_button_row, text="移除选中", command=self.remove_selected_sessions).grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(file_button_row, text="清空全部", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=4)
-        ttk.Button(file_button_row, text="设为基准", command=self.set_selected_session_as_reference).grid(row=0, column=3, sticky="ew", padx=(4, 0))
+        ttk.Button(file_button_row, text="Add CSV...", command=self.browse_csv).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(file_button_row, text="Remove Selected", command=self.remove_selected_sessions).grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(file_button_row, text="Clear All", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=4)
+        ttk.Button(file_button_row, text="Set Reference", command=self.set_selected_session_as_reference).grid(row=0, column=3, sticky="ew", padx=(4, 0))
 
-        session_detail_frame = ttk.Frame(file_frame)
+        session_detail_frame = ttk.Frame(self.file_management_module)
         session_detail_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         session_detail_frame.columnconfigure(1, weight=1)
         session_detail_frame.columnconfigure(3, weight=1)
 
-        ttk.Label(session_detail_frame, text="别名").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(session_detail_frame, text="Alias").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.session_alias_entry = ttk.Entry(session_detail_frame, textvariable=self.session_alias_var)
         self.session_alias_entry.grid(row=0, column=1, sticky="ew")
         self.session_alias_entry.bind("<Return>", self.apply_selected_session_details)
         self.session_alias_entry.bind("<FocusOut>", self.apply_selected_session_details)
 
-        ttk.Label(session_detail_frame, text="偏移(秒)").grid(row=0, column=2, sticky="w", padx=(12, 8))
+        ttk.Label(session_detail_frame, text="Offset (s)").grid(row=0, column=2, sticky="w", padx=(12, 8))
         self.session_offset_entry = ttk.Entry(session_detail_frame, textvariable=self.session_offset_var, width=12)
         self.session_offset_entry.grid(row=0, column=3, sticky="ew")
         self.session_offset_entry.bind("<Return>", self.apply_selected_session_details)
         self.session_offset_entry.bind("<FocusOut>", self.apply_selected_session_details)
 
-        offset_button_row = ttk.Frame(file_frame)
+        offset_button_row = ttk.Frame(self.file_management_module)
         offset_button_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
         offset_button_row.columnconfigure((0, 1, 2, 3, 4), weight=1)
 
@@ -467,7 +516,7 @@ class HWiNFOPlotterApp(tk.Tk):
             sticky="ew",
             padx=4,
         )
-        ttk.Button(offset_button_row, text="应用编辑", command=self.apply_selected_session_details).grid(
+        ttk.Button(offset_button_row, text="Apply", command=self.apply_selected_session_details).grid(
             row=0,
             column=2,
             sticky="ew",
@@ -487,22 +536,24 @@ class HWiNFOPlotterApp(tk.Tk):
         )
 
         ttk.Label(
-            file_frame,
-            text="正偏移向右移动曲线，负偏移向左移动曲线；拖入多个 CSV 时会按路径自动去重。",
+            self.file_management_module,
+            textvariable=self.session_source_trim_var,
         ).grid(row=4, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(
+            self.file_management_module,
+            text="Positive offsets move clips right. Module 4 also supports drag-to-align and trim.",
+        ).grid(row=5, column=0, sticky="w", pady=(4, 0))
 
-        paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
-        paned.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 10))
+    def _build_parameter_and_chart_module(self, parent: tk.Misc) -> None:
+        self.parameter_chart_module = ttk.Labelframe(parent, text="Module 3 | Parameters + Chart Style", padding=(10, 8, 10, 8))
+        self.parameter_chart_module.grid(row=1, column=0, sticky="nsew")
+        self.parameter_chart_module.columnconfigure(0, weight=1)
+        self.parameter_chart_module.rowconfigure(0, weight=1)
 
-        control_panel_wrapper = ttk.Frame(paned)
-        preview_panel = ttk.Frame(paned)
+        control_panel_wrapper = ttk.Frame(self.parameter_chart_module)
+        control_panel_wrapper.grid(row=0, column=0, sticky="nsew")
         control_panel_wrapper.columnconfigure(0, weight=1)
         control_panel_wrapper.rowconfigure(0, weight=1)
-        preview_panel.columnconfigure(0, weight=1)
-        preview_panel.rowconfigure(0, weight=1)
-
-        paned.add(control_panel_wrapper, weight=1)
-        paned.add(preview_panel, weight=3)
 
         self.control_scroll_canvas = tk.Canvas(control_panel_wrapper, highlightthickness=0, borderwidth=0)
         self.control_scroll_canvas.grid(row=0, column=0, sticky="nsew")
@@ -522,7 +573,7 @@ class HWiNFOPlotterApp(tk.Tk):
         control_panel.bind("<Configure>", self._on_control_host_configure)
         self.control_scroll_canvas.bind("<Configure>", self._on_control_canvas_configure)
 
-        ttk.Label(control_panel, text="参数筛选").grid(row=0, column=0, sticky="w")
+        ttk.Label(control_panel, text="Filter").grid(row=0, column=0, sticky="w")
         ttk.Entry(control_panel, textvariable=self.filter_var).grid(row=1, column=0, sticky="ew", pady=(4, 8))
 
         list_frame = ttk.Frame(control_panel)
@@ -550,209 +601,11 @@ class HWiNFOPlotterApp(tk.Tk):
         button_row.grid(row=4, column=0, sticky="ew", pady=(0, 10))
         button_row.columnconfigure((0, 1), weight=1)
 
-        ttk.Button(button_row, text="全选可见项", command=self.select_all_visible).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ttk.Button(button_row, text="清空选择", command=self.clear_selection).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Button(button_row, text="Select Visible", command=self.select_all_visible).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(button_row, text="Clear Selection", command=self.clear_selection).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        options_frame = ttk.Labelframe(control_panel, text="图表设置", padding=12)
-        options_frame.grid(row=5, column=0, sticky="ew")
-        options_frame.columnconfigure(1, weight=1)
-        options_frame.columnconfigure(3, weight=1)
-
-        ttk.Label(options_frame, text="图表标题").grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.title_var).grid(row=0, column=1, columnspan=3, sticky="ew", pady=(0, 8))
-
-        ttk.Label(options_frame, text="宽度(px)").grid(row=1, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.width_var, width=10).grid(row=1, column=1, sticky="ew")
-
-        ttk.Label(options_frame, text="高度(px)").grid(row=1, column=2, sticky="w", padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.height_var, width=10).grid(row=1, column=3, sticky="ew")
-
-        ttk.Label(options_frame, text="DPI").grid(row=2, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        ttk.Entry(options_frame, textvariable=self.dpi_var, width=10).grid(row=2, column=1, sticky="ew", pady=(8, 0))
-
-        ttk.Label(options_frame, text="曲线线宽").grid(row=2, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
-        ttk.Entry(options_frame, textvariable=self.line_width_var, width=10).grid(row=2, column=3, sticky="ew", pady=(8, 0))
-
-        ttk.Label(options_frame, text="时间刻度密度").grid(row=3, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        time_density_frame = ttk.Frame(options_frame)
-        time_density_frame.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(8, 0))
-        time_density_frame.columnconfigure(0, weight=1)
-
-        time_density_scale = tk.Scale(
-            time_density_frame,
-            from_=MIN_TIME_TICK_DENSITY,
-            to=MAX_TIME_TICK_DENSITY,
-            orient=tk.HORIZONTAL,
-            resolution=1,
-            showvalue=False,
-            variable=self.time_density_var,
-        )
-        time_density_scale.grid(row=0, column=0, sticky="ew")
-        ttk.Label(time_density_frame, textvariable=self.time_density_label_var).grid(row=0, column=1, sticky="e", padx=(8, 0))
-
-        ttk.Label(options_frame, text="固定时间间隔").grid(row=4, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        fixed_interval_frame = ttk.Frame(options_frame)
-        fixed_interval_frame.grid(row=4, column=1, columnspan=3, sticky="ew", pady=(8, 0))
-        fixed_interval_frame.columnconfigure(0, weight=1)
-
-        ttk.Entry(fixed_interval_frame, textvariable=self.fixed_time_interval_var).grid(row=0, column=0, sticky="ew")
-        ttk.Combobox(
-            fixed_interval_frame,
-            textvariable=self.fixed_time_interval_unit_var,
-            values=list(TIME_INTERVAL_UNIT_CHOICES.keys()),
-            state="readonly",
-            width=8,
-        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
-
-        ttk.Checkbutton(options_frame, text="显示网格", variable=self.show_grid_var).grid(
-            row=5,
-            column=0,
-            columnspan=2,
-            sticky="w",
-            pady=(8, 0),
-        )
-        ttk.Checkbutton(options_frame, text="显示图例", variable=self.show_legend_var).grid(
-            row=5,
-            column=2,
-            columnspan=2,
-            sticky="w",
-            pady=(8, 0),
-        )
-
-        ttk.Checkbutton(options_frame, text="显示时间文字", variable=self.show_time_axis_var).grid(
-            row=6,
-            column=0,
-            columnspan=2,
-            sticky="w",
-            pady=(8, 0),
-        )
-        ttk.Checkbutton(options_frame, text="显示数值文字", variable=self.show_value_axis_var).grid(
-            row=6,
-            column=2,
-            columnspan=2,
-            sticky="w",
-            pady=(8, 0),
-        )
-
-        ttk.Checkbutton(options_frame, text="纯曲线模式", variable=self.curve_only_mode_var).grid(
-            row=7,
-            column=0,
-            columnspan=4,
-            sticky="w",
-            pady=(8, 0),
-        )
-
-        ttk.Label(options_frame, text="图例位置").grid(row=8, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        legend_location_box = ttk.Combobox(
-            options_frame,
-            textvariable=self.legend_location_var,
-            values=list(LEGEND_LOCATION_CHOICES.keys()),
-            state="readonly",
-            width=10,
-        )
-        legend_location_box.grid(row=8, column=1, columnspan=3, sticky="ew", pady=(8, 0))
-
-        self._build_chart_color_row(
-            options_frame,
-            row=9,
-            label_text="坐标轴颜色",
-            color_var=self.axis_color_var,
-            field_name="坐标轴颜色",
-        )
-        self._build_chart_color_row(
-            options_frame,
-            row=10,
-            label_text="网格颜色",
-            color_var=self.grid_color_var,
-            field_name="网格颜色",
-        )
-        self._build_chart_color_row(
-            options_frame,
-            row=11,
-            label_text="时间文字颜色",
-            color_var=self.time_text_color_var,
-            field_name="时间文字颜色",
-        )
-        self._build_chart_color_row(
-            options_frame,
-            row=12,
-            label_text="数值文字颜色",
-            color_var=self.value_text_color_var,
-            field_name="数值文字颜色",
-        )
-        self._build_chart_color_row(
-            options_frame,
-            row=13,
-            label_text="图例文字颜色",
-            color_var=self.legend_text_color_var,
-            field_name="图例文字颜色",
-        )
-
-        ttk.Label(options_frame, text="字体").grid(row=14, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
-        ttk.Combobox(
-            options_frame,
-            textvariable=self.font_family_var,
-            values=self.font_family_choices,
-            state="readonly",
-            height=20,
-        ).grid(
-            row=14,
-            column=1,
-            columnspan=3,
-            sticky="ew",
-            pady=(8, 0),
-        )
-
-        ttk.Label(options_frame, text="颜色支持 HEX 输入与取色器；字体请从下拉列表选择。").grid(
-            row=15,
-            column=0,
-            columnspan=4,
-            sticky="w",
-            pady=(8, 0),
-        )
-
-        trim_frame = ttk.Labelframe(control_panel, text="可视化范围", padding=12)
-        trim_frame.grid(row=6, column=0, sticky="ew", pady=(12, 0))
-        trim_frame.columnconfigure(1, weight=1)
-
-        ttk.Label(trim_frame, text="起始裁剪").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.trim_start_scale = tk.Scale(
-            trim_frame,
-            from_=0,
-            to=0,
-            orient=tk.HORIZONTAL,
-            resolution=1,
-            showvalue=False,
-            variable=self.trim_start_var,
-            state=tk.DISABLED,
-        )
-        self.trim_start_scale.grid(row=0, column=1, sticky="ew")
-        ttk.Label(trim_frame, textvariable=self.trim_start_label_var, width=10).grid(row=0, column=2, sticky="e", padx=(8, 0))
-
-        ttk.Label(trim_frame, text="结束裁剪").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=(8, 0))
-        self.trim_end_scale = tk.Scale(
-            trim_frame,
-            from_=0,
-            to=0,
-            orient=tk.HORIZONTAL,
-            resolution=1,
-            showvalue=False,
-            variable=self.trim_end_var,
-            state=tk.DISABLED,
-        )
-        self.trim_end_scale.grid(row=1, column=1, sticky="ew", pady=(8, 0))
-        ttk.Label(trim_frame, textvariable=self.trim_end_label_var, width=10).grid(row=1, column=2, sticky="e", padx=(8, 0), pady=(8, 0))
-
-        ttk.Label(trim_frame, textvariable=self.trim_duration_label_var).grid(
-            row=2,
-            column=0,
-            columnspan=3,
-            sticky="w",
-            pady=(8, 0),
-        )
-
-        series_style_frame = ttk.Labelframe(control_panel, text="参数颜色", padding=12)
-        series_style_frame.grid(row=7, column=0, sticky="nsew", pady=(12, 0))
+        series_style_frame = ttk.Labelframe(control_panel, text="Series Colors", padding=12)
+        series_style_frame.grid(row=5, column=0, sticky="nsew", pady=(0, 12))
         series_style_frame.columnconfigure(0, weight=1)
         series_style_frame.rowconfigure(0, weight=1)
 
@@ -791,38 +644,197 @@ class HWiNFOPlotterApp(tk.Tk):
         color_button_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         color_button_row.columnconfigure((0, 1, 2), weight=1)
 
-        ttk.Button(color_button_row, text="应用颜色", command=self.apply_series_color).grid(
+        ttk.Button(color_button_row, text="Apply Color", command=self.apply_series_color).grid(
             row=0,
             column=0,
             sticky="ew",
             padx=(0, 4),
         )
-        ttk.Button(color_button_row, text="取色器...", command=self.choose_series_color).grid(
+        ttk.Button(color_button_row, text="Picker...", command=self.choose_series_color).grid(
             row=0,
             column=1,
             sticky="ew",
             padx=4,
         )
-        ttk.Button(color_button_row, text="清除颜色", command=self.clear_series_color).grid(
+        ttk.Button(color_button_row, text="Clear Color", command=self.clear_series_color).grid(
             row=0,
             column=2,
             sticky="ew",
             padx=(4, 0),
         )
 
+        options_frame = ttk.Labelframe(control_panel, text="Chart Style", padding=12)
+        options_frame.grid(row=6, column=0, sticky="ew")
+        options_frame.columnconfigure(1, weight=1)
+        options_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(options_frame, text="Chart Title").grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.title_var).grid(row=0, column=1, columnspan=3, sticky="ew", pady=(0, 8))
+
+        ttk.Label(options_frame, text="Width (px)").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.width_var, width=10).grid(row=1, column=1, sticky="ew")
+
+        ttk.Label(options_frame, text="Height (px)").grid(row=1, column=2, sticky="w", padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.height_var, width=10).grid(row=1, column=3, sticky="ew")
+
+        ttk.Label(options_frame, text="DPI").grid(row=2, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.dpi_var, width=10).grid(row=2, column=1, sticky="ew", pady=(8, 0))
+
+        ttk.Label(options_frame, text="Line Width").grid(row=2, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
+        ttk.Entry(options_frame, textvariable=self.line_width_var, width=10).grid(row=2, column=3, sticky="ew", pady=(8, 0))
+
+        ttk.Label(options_frame, text="Time Density").grid(row=3, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        time_density_frame = ttk.Frame(options_frame)
+        time_density_frame.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        time_density_frame.columnconfigure(0, weight=1)
+
+        time_density_scale = tk.Scale(
+            time_density_frame,
+            from_=MIN_TIME_TICK_DENSITY,
+            to=MAX_TIME_TICK_DENSITY,
+            orient=tk.HORIZONTAL,
+            resolution=1,
+            showvalue=False,
+            variable=self.time_density_var,
+        )
+        time_density_scale.grid(row=0, column=0, sticky="ew")
+        ttk.Label(time_density_frame, textvariable=self.time_density_label_var).grid(row=0, column=1, sticky="e", padx=(8, 0))
+
+        ttk.Label(options_frame, text="Fixed Time Interval").grid(row=4, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        fixed_interval_frame = ttk.Frame(options_frame)
+        fixed_interval_frame.grid(row=4, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        fixed_interval_frame.columnconfigure(0, weight=1)
+
+        ttk.Entry(fixed_interval_frame, textvariable=self.fixed_time_interval_var).grid(row=0, column=0, sticky="ew")
+        ttk.Combobox(
+            fixed_interval_frame,
+            textvariable=self.fixed_time_interval_unit_var,
+            values=list(TIME_INTERVAL_UNIT_CHOICES.keys()),
+            state="readonly",
+            width=8,
+        ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+        ttk.Checkbutton(options_frame, text="Show Grid", variable=self.show_grid_var).grid(
+            row=5,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+        ttk.Checkbutton(options_frame, text="Show Legend", variable=self.show_legend_var).grid(
+            row=5,
+            column=2,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+        ttk.Checkbutton(options_frame, text="Show Time Labels", variable=self.show_time_axis_var).grid(
+            row=6,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+        ttk.Checkbutton(options_frame, text="Show Value Labels", variable=self.show_value_axis_var).grid(
+            row=6,
+            column=2,
+            columnspan=2,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+        ttk.Checkbutton(options_frame, text="Curve Only Mode", variable=self.curve_only_mode_var).grid(
+            row=7,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="Legend Position").grid(row=8, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        legend_location_box = ttk.Combobox(
+            options_frame,
+            textvariable=self.legend_location_var,
+            values=list(LEGEND_LOCATION_CHOICES.keys()),
+            state="readonly",
+            width=10,
+        )
+        legend_location_box.grid(row=8, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+
+        self._build_chart_color_row(
+            options_frame,
+            row=9,
+            label_text="Axis Color",
+            color_var=self.axis_color_var,
+            field_name="Axis Color",
+        )
+        self._build_chart_color_row(
+            options_frame,
+            row=10,
+            label_text="Grid Color",
+            color_var=self.grid_color_var,
+            field_name="Grid Color",
+        )
+        self._build_chart_color_row(
+            options_frame,
+            row=11,
+            label_text="Time Text Color",
+            color_var=self.time_text_color_var,
+            field_name="Time Text Color",
+        )
+        self._build_chart_color_row(
+            options_frame,
+            row=12,
+            label_text="Value Text Color",
+            color_var=self.value_text_color_var,
+            field_name="Value Text Color",
+        )
+        self._build_chart_color_row(
+            options_frame,
+            row=13,
+            label_text="Legend Text Color",
+            color_var=self.legend_text_color_var,
+            field_name="Legend Text Color",
+        )
+
+        ttk.Label(options_frame, text="Font").grid(row=14, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Combobox(
+            options_frame,
+            textvariable=self.font_family_var,
+            values=self.font_family_choices,
+            state="readonly",
+            height=20,
+        ).grid(
+            row=14,
+            column=1,
+            columnspan=3,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Label(options_frame, text="Colors accept HEX input or the picker.").grid(
+            row=15,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            pady=(8, 0),
+        )
+
         action_row = ttk.Frame(control_panel)
-        action_row.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+        action_row.grid(row=7, column=0, sticky="ew", pady=(12, 0))
         action_row.columnconfigure((0, 1), weight=1)
 
-        ttk.Button(action_row, text="重置样式", command=self.reset_chart_options).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ttk.Button(action_row, text="导出透明 PNG", command=self.export_png).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Button(action_row, text="Reset Style", command=self.reset_chart_options).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(action_row, text="Export PNG", command=self.export_png).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        preview_frame = ttk.Labelframe(preview_panel, text="图表预览", padding=8)
-        preview_frame.grid(row=0, column=0, sticky="nsew")
-        preview_frame.columnconfigure(0, weight=1)
-        preview_frame.rowconfigure(0, weight=1)
+    def _build_preview_module(self, parent: tk.Misc) -> None:
+        self.preview_module = ttk.Labelframe(parent, text="Module 2 | Preview", padding=8)
+        self.preview_module.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        self.preview_module.columnconfigure(0, weight=1)
+        self.preview_module.rowconfigure(0, weight=1)
 
-        self.preview_host = ttk.Frame(preview_frame)
+        self.preview_host = ttk.Frame(self.preview_module)
         self.preview_host.grid(row=0, column=0, sticky="nsew")
         self.preview_host.columnconfigure(0, weight=1)
         self.preview_host.rowconfigure(0, weight=1)
@@ -831,15 +843,79 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.preview_placeholder = ttk.Label(
             self.preview_host,
-            text="添加或拖入一个或多个 CSV，并选择参数后，图表会按当前配置自动预览。",
+            text="Add or drop CSV files, then select metrics to see the live preview.",
             anchor="center",
             justify="center",
         )
         self.preview_placeholder.grid(row=0, column=0, sticky="nsew")
 
-        status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor="w", padding=(10, 6))
-        status_bar.grid(row=2, column=0, sticky="ew")
-        self._bind_mousewheel_events()
+    def _build_time_editing_module(self, parent: tk.Misc) -> None:
+        self.time_editing_module = ttk.Labelframe(parent, text="Module 4 | Work Area + Timeline", padding=(10, 8, 10, 8))
+        self.time_editing_module.grid(row=1, column=0, sticky="nsew")
+        self.time_editing_module.columnconfigure(0, weight=1)
+        self.time_editing_module.rowconfigure(1, weight=1)
+
+        toolbar = ttk.Frame(self.time_editing_module)
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        toolbar.columnconfigure(1, weight=1)
+
+        ttk.Label(toolbar, text="Zoom").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        tk.Scale(
+            toolbar,
+            from_=0.25,
+            to=8.0,
+            resolution=0.25,
+            orient=tk.HORIZONTAL,
+            showvalue=False,
+            variable=self.timeline_zoom_var,
+        ).grid(row=0, column=1, sticky="ew")
+        ttk.Button(toolbar, text="Reset Selected Align", command=self.reset_selected_session_offsets).grid(
+            row=0,
+            column=2,
+            sticky="ew",
+            padx=(8, 0),
+        )
+        ttk.Button(toolbar, text="Reset Selected Trim", command=self.reset_selected_session_source_trims).grid(
+            row=0,
+            column=3,
+            sticky="ew",
+            padx=(8, 0),
+        )
+        ttk.Button(toolbar, text="Reset Work Area", command=self.reset_work_area).grid(
+            row=0,
+            column=4,
+            sticky="ew",
+            padx=(8, 0),
+        )
+        ttk.Label(toolbar, textvariable=self.trim_duration_label_var).grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
+
+        timeline_host = ttk.Frame(self.time_editing_module)
+        timeline_host.grid(row=1, column=0, sticky="nsew")
+        timeline_host.columnconfigure(0, weight=1)
+        timeline_host.rowconfigure(0, weight=1)
+
+        self.timeline_canvas = tk.Canvas(
+            timeline_host,
+            height=220,
+            background="#f7f8fb",
+            highlightthickness=1,
+            highlightbackground="#d6dbe6",
+        )
+        self.timeline_canvas.grid(row=0, column=0, sticky="nsew")
+        self.timeline_canvas.bind("<Configure>", self._on_timeline_canvas_configure)
+        self.timeline_canvas.bind("<ButtonPress-1>", self._on_timeline_button_press)
+        self.timeline_canvas.bind("<B1-Motion>", self._on_timeline_drag)
+        self.timeline_canvas.bind("<ButtonRelease-1>", self._on_timeline_button_release)
+
+        self.timeline_hscrollbar = ttk.Scrollbar(
+            timeline_host,
+            orient=tk.HORIZONTAL,
+            command=self.timeline_canvas.xview,
+        )
+        self.timeline_hscrollbar.grid(row=1, column=0, sticky="ew")
+        self.timeline_canvas.configure(xscrollcommand=self.timeline_hscrollbar.set)
+
+        ttk.Label(self.time_editing_module, textvariable=self.timeline_status_var).grid(row=2, column=0, sticky="w", pady=(8, 0))
 
     def _find_default_csv(self) -> str:
         for pattern in ("*.csv", "*.CSV"):
@@ -887,6 +963,14 @@ class HWiNFOPlotterApp(tk.Tk):
             duration_text = "00:00:00"
             if session.data.elapsed_seconds:
                 duration_text = format_elapsed_time(session.data.elapsed_seconds[-1])
+            trim_start_seconds, trim_end_seconds = resolve_session_source_trim_range(session)
+            trim_text = f"{format_elapsed_time(trim_start_seconds)} → {format_elapsed_time(trim_end_seconds)}"
+            if session.preload_error:
+                preload_text = "错误"
+            elif session.preload_ready:
+                preload_text = "就绪"
+            else:
+                preload_text = "等待"
             self.session_tree.insert(
                 "",
                 tk.END,
@@ -896,7 +980,9 @@ class HWiNFOPlotterApp(tk.Tk):
                     session.data.source_path.name,
                     duration_text,
                     self.format_offset_seconds(session.offset_seconds),
+                    trim_text,
                     "是" if session.is_reference else "",
+                    preload_text,
                 ),
             )
 
@@ -922,6 +1008,13 @@ class HWiNFOPlotterApp(tk.Tk):
             self.session_offset_var.set(
                 "" if selected_session is None else self.format_offset_seconds(selected_session.offset_seconds)
             )
+            if selected_session is None:
+                self.session_source_trim_var.set("有效片段：--")
+            else:
+                trim_start_seconds, trim_end_seconds = resolve_session_source_trim_range(selected_session)
+                self.session_source_trim_var.set(
+                    f"有效片段：{format_elapsed_time(trim_start_seconds)} → {format_elapsed_time(trim_end_seconds)}"
+                )
         finally:
             self._updating_session_editor = False
 
@@ -930,6 +1023,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def on_session_selection_changed(self, _event=None) -> None:
         self.sync_session_editor()
+        self.refresh_timeline()
 
     def refresh_after_session_change(
         self,
@@ -1177,9 +1271,13 @@ class HWiNFOPlotterApp(tk.Tk):
             return None if horizontal else self.column_listbox.yview_scroll
         if widget is self.selected_series_listbox:
             return None if horizontal else self.selected_series_listbox.yview_scroll
+        if widget is self.timeline_canvas:
+            return self.timeline_canvas.xview_scroll if horizontal else self.timeline_canvas.yview_scroll
 
         if self._widget_is_descendant_of(widget, self.control_panel) or widget is self.control_scroll_canvas:
             return None if horizontal else self.control_scroll_canvas.yview_scroll
+        if self._widget_is_descendant_of(widget, self.time_editing_module):
+            return self.timeline_canvas.xview_scroll if horizontal else self.timeline_canvas.yview_scroll
 
         return None
 
@@ -1251,6 +1349,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self._updating_trim_controls = False
 
         if self.get_render_sessions():
+            self.refresh_timeline()
             self.schedule_preview_refresh()
 
     def _on_trim_end_changed(self, *_args) -> None:
@@ -1268,6 +1367,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self._updating_trim_controls = False
 
         if self.get_render_sessions():
+            self.refresh_timeline()
             self.schedule_preview_refresh()
 
     def update_trim_labels(self) -> None:
@@ -1281,10 +1381,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def configure_trim_controls(self, preserve_range: bool = False) -> None:
         global_start_seconds, global_end_seconds = self.get_global_time_bounds()
-        slider_state = tk.NORMAL if self.get_render_sessions() else tk.DISABLED
         previous_range = self.get_visible_range_seconds() if preserve_range else None
-        for slider in (self.trim_start_scale, self.trim_end_scale):
-            slider.configure(from_=global_start_seconds, to=global_end_seconds, state=slider_state)
 
         self._updating_trim_controls = True
         try:
@@ -1301,6 +1398,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self.update_trim_labels()
         finally:
             self._updating_trim_controls = False
+        self.refresh_timeline()
 
     def get_global_time_bounds(self) -> tuple[float, float]:
         return compute_global_time_bounds(self.get_render_sessions())
@@ -1332,6 +1430,582 @@ class HWiNFOPlotterApp(tk.Tk):
         if self.preview_source_png_bytes is None:
             return
         self.schedule_preview_display_refresh()
+
+    def _on_timeline_zoom_changed(self, *_args) -> None:
+        self.timeline_pixels_per_second = max(6.0, 12.0 * float(self.timeline_zoom_var.get()))
+        self.refresh_timeline()
+
+    def _on_timeline_canvas_configure(self, _event=None) -> None:
+        self.refresh_timeline()
+
+    def get_timeline_bounds(self) -> tuple[float, float]:
+        render_sessions = self.get_render_sessions()
+        if not render_sessions:
+            return 0.0, 60.0
+
+        start_candidates: list[float] = []
+        end_candidates: list[float] = []
+        for session in render_sessions:
+            full_start_seconds, full_end_seconds = compute_session_timeline_range(session)
+            active_start_seconds, active_end_seconds = compute_session_active_timeline_range(session)
+            start_candidates.extend((full_start_seconds, active_start_seconds))
+            end_candidates.extend((full_end_seconds, active_end_seconds))
+
+        visible_range_seconds = self.get_visible_range_seconds()
+        if visible_range_seconds is not None:
+            start_candidates.append(visible_range_seconds[0])
+            end_candidates.append(visible_range_seconds[1])
+
+        start_seconds = min(start_candidates)
+        end_seconds = max(end_candidates)
+        if end_seconds <= start_seconds:
+            end_seconds = start_seconds + 1.0
+
+        padding_seconds = max(2.0, (end_seconds - start_seconds) * 0.05)
+        return float(start_seconds - padding_seconds), float(end_seconds + padding_seconds)
+
+    def refresh_timeline(self) -> None:
+        if not hasattr(self, "timeline_canvas"):
+            return
+        if self._refreshing_timeline:
+            return
+        if not self.timeline_canvas.winfo_exists():
+            return
+
+        self._refreshing_timeline = True
+        try:
+            canvas = self.timeline_canvas
+            canvas.delete("all")
+            self.timeline_clip_item_by_session_id.clear()
+            self.timeline_hit_regions.clear()
+            self.timeline_work_area_item_ids.clear()
+
+            render_sessions = self.get_render_sessions()
+            if not render_sessions:
+                canvas.configure(scrollregion=(0, 0, max(canvas.winfo_width(), 640), 220))
+                canvas.create_text(
+                    20,
+                    110,
+                    anchor="w",
+                    fill="#5f6b7a",
+                    text="添加 CSV 后，这里会显示统一时间轴。",
+                )
+                self.timeline_status_var.set("时间轴：添加 CSV 后可拖动 clip 对齐、拖动边缘裁剪。")
+                return
+
+            metrics = self._get_timeline_metrics()
+            self.timeline_start_seconds, self.timeline_end_seconds = self.get_timeline_bounds()
+            content_width = max(
+                canvas.winfo_width(),
+                int(
+                    metrics["left_gutter"]
+                    + metrics["right_padding"]
+                    + max(self.timeline_end_seconds - self.timeline_start_seconds, 1.0) * self.timeline_pixels_per_second
+                ),
+            )
+            content_height = int(
+                metrics["tracks_top"]
+                + len(render_sessions) * metrics["track_row_height"]
+                + metrics["bottom_padding"]
+            )
+            canvas.configure(scrollregion=(0, 0, content_width, content_height))
+
+            self._draw_timeline_axis(canvas, content_width, metrics)
+            self._draw_timeline_work_area(canvas, content_width, content_height, metrics)
+            self._draw_timeline_sessions(canvas, render_sessions, metrics)
+
+            selected_count = len(self.get_selected_session_ids())
+            self.timeline_status_var.set(
+                f"时间轴：{len(render_sessions)} 个文件，当前选中 {selected_count} 个；拖动主体对齐，拖动边缘裁剪。"
+            )
+        finally:
+            self._refreshing_timeline = False
+
+    @staticmethod
+    def _get_timeline_metrics() -> dict[str, float]:
+        return {
+            "left_gutter": 150.0,
+            "right_padding": 48.0,
+            "top_padding": 16.0,
+            "axis_y": 28.0,
+            "work_area_top": 40.0,
+            "work_area_height": 28.0,
+            "tracks_top": 88.0,
+            "track_row_height": 42.0,
+            "clip_height": 22.0,
+            "handle_width": 6.0,
+            "bottom_padding": 28.0,
+        }
+
+    def _draw_timeline_axis(self, canvas: tk.Canvas, content_width: int, metrics: dict[str, float]) -> None:
+        axis_y = metrics["axis_y"]
+        left_x = metrics["left_gutter"]
+        right_x = content_width - metrics["right_padding"]
+        canvas.create_line(left_x, axis_y, right_x, axis_y, fill="#bac3cf")
+
+        span_seconds = max(self.timeline_end_seconds - self.timeline_start_seconds, 1.0)
+        candidate_steps = (0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600)
+        target_step_seconds = span_seconds / 8.0
+        tick_step_seconds = candidate_steps[-1]
+        for candidate_step_seconds in candidate_steps:
+            if candidate_step_seconds >= target_step_seconds:
+                tick_step_seconds = candidate_step_seconds
+                break
+
+        first_tick_seconds = (
+            int(self.timeline_start_seconds / tick_step_seconds) * tick_step_seconds
+        )
+        if first_tick_seconds > self.timeline_start_seconds:
+            first_tick_seconds -= tick_step_seconds
+
+        tick_seconds = first_tick_seconds
+        while tick_seconds <= self.timeline_end_seconds + tick_step_seconds:
+            tick_x = self._timeline_seconds_to_x(tick_seconds, metrics)
+            if left_x <= tick_x <= right_x:
+                canvas.create_line(tick_x, axis_y - 5, tick_x, axis_y + 5, fill="#9aa5b5")
+                canvas.create_text(
+                    tick_x,
+                    axis_y - 10,
+                    text=format_compact_elapsed_time(tick_seconds),
+                    fill="#516073",
+                    font=("Segoe UI", 9),
+                )
+            tick_seconds += tick_step_seconds
+
+    def _draw_timeline_work_area(
+        self,
+        canvas: tk.Canvas,
+        content_width: int,
+        content_height: int,
+        metrics: dict[str, float],
+    ) -> None:
+        visible_range_seconds = self.get_visible_range_seconds()
+        if visible_range_seconds is None:
+            return
+
+        start_seconds, end_seconds = visible_range_seconds
+        top_y = metrics["work_area_top"]
+        bottom_y = top_y + metrics["work_area_height"]
+        left_x = self._timeline_seconds_to_x(start_seconds, metrics)
+        right_x = self._timeline_seconds_to_x(end_seconds, metrics)
+        handle_width = metrics["handle_width"]
+
+        canvas.create_rectangle(
+            metrics["left_gutter"],
+            top_y,
+            content_width - metrics["right_padding"],
+            bottom_y,
+            fill="#edf1f6",
+            outline="",
+        )
+        area_id = canvas.create_rectangle(
+            left_x,
+            top_y,
+            right_x,
+            bottom_y,
+            fill="#dfe9ff",
+            outline="#6f89c5",
+            width=1,
+        )
+        canvas.create_text(
+            left_x + 8,
+            top_y + metrics["work_area_height"] / 2,
+            anchor="w",
+            fill="#314463",
+            text="Work Area",
+            font=("Segoe UI", 9, "bold"),
+        )
+        start_handle_id = canvas.create_rectangle(
+            left_x - handle_width,
+            top_y,
+            left_x + handle_width,
+            bottom_y,
+            fill="#6f89c5",
+            outline="",
+        )
+        end_handle_id = canvas.create_rectangle(
+            right_x - handle_width,
+            top_y,
+            right_x + handle_width,
+            bottom_y,
+            fill="#6f89c5",
+            outline="",
+        )
+        self.timeline_hit_regions[area_id] = ("move_work_area", None)
+        self.timeline_hit_regions[start_handle_id] = ("work_area_start", None)
+        self.timeline_hit_regions[end_handle_id] = ("work_area_end", None)
+        self.timeline_work_area_item_ids.update({area_id, start_handle_id, end_handle_id})
+
+        canvas.create_rectangle(
+            metrics["left_gutter"],
+            bottom_y + 6,
+            content_width - metrics["right_padding"],
+            content_height - metrics["bottom_padding"],
+            fill="",
+            outline="#e4e8ef",
+        )
+
+    def _draw_timeline_sessions(
+        self,
+        canvas: tk.Canvas,
+        render_sessions: Sequence[LoadedCsvSession],
+        metrics: dict[str, float],
+    ) -> None:
+        selected_session_ids = set(self.get_selected_session_ids())
+        for row_index, session in enumerate(render_sessions):
+            row_top = metrics["tracks_top"] + row_index * metrics["track_row_height"]
+            clip_top = row_top + 9
+            clip_bottom = clip_top + metrics["clip_height"]
+            full_start_seconds, full_end_seconds = compute_session_timeline_range(session)
+            active_start_seconds, active_end_seconds = compute_session_active_timeline_range(session)
+            full_left_x = self._timeline_seconds_to_x(full_start_seconds, metrics)
+            full_right_x = self._timeline_seconds_to_x(full_end_seconds, metrics)
+            active_left_x = self._timeline_seconds_to_x(active_start_seconds, metrics)
+            active_right_x = self._timeline_seconds_to_x(active_end_seconds, metrics)
+            handle_width = metrics["handle_width"]
+            is_selected = session.session_id in selected_session_ids
+            clip_fill = "#7ea7ff" if not session.is_reference else "#78b56d"
+            clip_outline = "#1f4aa8" if is_selected else "#5578be"
+
+            canvas.create_text(
+                12,
+                clip_top + metrics["clip_height"] / 2,
+                anchor="w",
+                fill="#2e3c4f",
+                text=session.alias,
+                font=("Segoe UI", 9, "bold" if is_selected else "normal"),
+            )
+            canvas.create_text(
+                12,
+                clip_top + metrics["clip_height"] / 2 + 13,
+                anchor="w",
+                fill="#748195",
+                text=f"offset {self.format_offset_seconds(session.offset_seconds)}s",
+                font=("Segoe UI", 8),
+            )
+
+            canvas.create_rectangle(
+                full_left_x,
+                clip_top,
+                full_right_x,
+                clip_bottom,
+                fill="#e6ebf2",
+                outline="#d1d9e5",
+            )
+            body_id = canvas.create_rectangle(
+                active_left_x,
+                clip_top,
+                max(active_right_x, active_left_x + 1),
+                clip_bottom,
+                fill=clip_fill,
+                outline=clip_outline,
+                width=2 if is_selected else 1,
+            )
+            left_handle_id = canvas.create_rectangle(
+                active_left_x - handle_width,
+                clip_top - 2,
+                active_left_x + handle_width,
+                clip_bottom + 2,
+                fill=clip_outline,
+                outline="",
+            )
+            right_handle_id = canvas.create_rectangle(
+                active_right_x - handle_width,
+                clip_top - 2,
+                active_right_x + handle_width,
+                clip_bottom + 2,
+                fill=clip_outline,
+                outline="",
+            )
+            label_text = session.data.source_path.name
+            if session.is_reference:
+                label_text = f"{label_text}  [REF]"
+            canvas.create_text(
+                active_left_x + 8,
+                clip_top + metrics["clip_height"] / 2,
+                anchor="w",
+                fill="#ffffff",
+                text=label_text,
+                font=("Segoe UI", 8, "bold"),
+            )
+
+            self.timeline_clip_item_by_session_id[session.session_id] = body_id
+            self.timeline_hit_regions[body_id] = ("move_clip", session.session_id)
+            self.timeline_hit_regions[left_handle_id] = ("trim_left", session.session_id)
+            self.timeline_hit_regions[right_handle_id] = ("trim_right", session.session_id)
+
+    def _timeline_seconds_to_x(self, seconds: float, metrics: dict[str, float] | None = None) -> float:
+        resolved_metrics = metrics or self._get_timeline_metrics()
+        return resolved_metrics["left_gutter"] + (
+            float(seconds) - self.timeline_start_seconds
+        ) * self.timeline_pixels_per_second
+
+    def _timeline_x_to_seconds(self, x: float, metrics: dict[str, float] | None = None) -> float:
+        resolved_metrics = metrics or self._get_timeline_metrics()
+        return self.timeline_start_seconds + (
+            float(x) - resolved_metrics["left_gutter"]
+        ) / self.timeline_pixels_per_second
+
+    def _find_timeline_hit(self, canvas_x: float, canvas_y: float) -> tuple[str, str | None] | None:
+        if not hasattr(self, "timeline_canvas"):
+            return None
+
+        overlapping_item_ids = self.timeline_canvas.find_overlapping(
+            canvas_x - 4,
+            canvas_y - 4,
+            canvas_x + 4,
+            canvas_y + 4,
+        )
+        for item_id in reversed(overlapping_item_ids):
+            hit = self.timeline_hit_regions.get(item_id)
+            if hit is not None:
+                return hit
+        return None
+
+    def _on_timeline_button_press(self, event) -> str | None:
+        hit = self._find_timeline_hit(
+            self.timeline_canvas.canvasx(event.x),
+            self.timeline_canvas.canvasy(event.y),
+        )
+        if hit is None:
+            self.timeline_drag_state = None
+            return None
+
+        action, session_id = hit
+        visible_range_seconds = self.get_visible_range_seconds()
+        if visible_range_seconds is None:
+            return None
+
+        if session_id is not None:
+            selected_session_ids = set(self.get_selected_session_ids())
+            if session_id not in selected_session_ids:
+                self.session_tree.selection_set((session_id,))
+                self.session_tree.focus(session_id)
+                selected_session_ids = {session_id}
+                self.sync_session_editor()
+                self.refresh_timeline()
+
+            if action == "move_clip":
+                tracked_session_ids = tuple(selected_session_ids)
+            else:
+                tracked_session_ids = (session_id,)
+            start_offsets = {
+                tracked_session_id: float(self.get_session_by_id(tracked_session_id).offset_seconds)
+                for tracked_session_id in tracked_session_ids
+                if self.get_session_by_id(tracked_session_id) is not None
+            }
+            start_trim_ranges = {
+                tracked_session_id: resolve_session_source_trim_range(self.get_session_by_id(tracked_session_id))
+                for tracked_session_id in tracked_session_ids
+                if self.get_session_by_id(tracked_session_id) is not None
+            }
+        else:
+            tracked_session_ids = ()
+            start_offsets = {}
+            start_trim_ranges = {}
+
+        self.timeline_drag_state = {
+            "action": action,
+            "start_x": self.timeline_canvas.canvasx(event.x),
+            "session_ids": tracked_session_ids,
+            "start_offsets": start_offsets,
+            "start_trim_ranges": start_trim_ranges,
+            "start_work_area": visible_range_seconds,
+        }
+        return "break"
+
+    def _on_timeline_drag(self, event) -> str | None:
+        if self.timeline_drag_state is None:
+            return None
+
+        action = str(self.timeline_drag_state["action"])
+        canvas_x = self.timeline_canvas.canvasx(event.x)
+        delta_seconds = self._snap_timeline_delta_seconds(
+            (canvas_x - float(self.timeline_drag_state["start_x"])) / self.timeline_pixels_per_second,
+            event,
+        )
+
+        if action == "move_clip":
+            updated_session_by_id: dict[str, LoadedCsvSession] = {}
+            for session_id in self.timeline_drag_state["session_ids"]:
+                session = self.get_session_by_id(session_id)
+                if session is None:
+                    continue
+                start_offset_seconds = self.timeline_drag_state["start_offsets"].get(session_id, session.offset_seconds)
+                updated_session_by_id[session_id] = replace(
+                    session,
+                    offset_seconds=float(start_offset_seconds) + delta_seconds,
+                )
+            if updated_session_by_id:
+                self._apply_timeline_session_updates(updated_session_by_id)
+                self._schedule_timeline_preview_refresh()
+            return "break"
+
+        if action in {"trim_left", "trim_right"}:
+            session_id = next(iter(self.timeline_drag_state["session_ids"]), None)
+            session = self.get_session_by_id(session_id) if session_id is not None else None
+            if session is None:
+                return "break"
+
+            full_start_seconds = float(session.data.elapsed_seconds[0]) if session.data.elapsed_seconds else 0.0
+            full_end_seconds = float(session.data.elapsed_seconds[-1]) if session.data.elapsed_seconds else 0.0
+            start_trim_start_seconds, start_trim_end_seconds = self.timeline_drag_state["start_trim_ranges"].get(
+                session_id,
+                resolve_session_source_trim_range(session),
+            )
+            if action == "trim_left":
+                resolved_trim_start_seconds = self._snap_timeline_value_seconds(
+                    min(start_trim_end_seconds, max(full_start_seconds, start_trim_start_seconds + delta_seconds)),
+                    event,
+                )
+                updated_session = replace(
+                    session,
+                    source_trim_start_seconds=resolved_trim_start_seconds,
+                )
+            else:
+                resolved_trim_end_seconds = self._snap_timeline_value_seconds(
+                    max(start_trim_start_seconds, min(full_end_seconds, start_trim_end_seconds + delta_seconds)),
+                    event,
+                )
+                updated_session = replace(
+                    session,
+                    source_trim_end_seconds=None if abs(resolved_trim_end_seconds - full_end_seconds) < 1e-9 else resolved_trim_end_seconds,
+                )
+
+            self._apply_timeline_session_updates({session.session_id: updated_session})
+            self._schedule_timeline_preview_refresh()
+            return "break"
+
+        if action in {"work_area_start", "work_area_end", "move_work_area"}:
+            start_seconds, end_seconds = self.timeline_drag_state["start_work_area"]
+            current_span_seconds = end_seconds - start_seconds
+            global_start_seconds, global_end_seconds = self.get_global_time_bounds()
+            if action == "work_area_start":
+                updated_start_seconds = self._snap_timeline_value_seconds(
+                    min(end_seconds, max(global_start_seconds, start_seconds + delta_seconds)),
+                    event,
+                )
+                updated_end_seconds = end_seconds
+            elif action == "work_area_end":
+                updated_start_seconds = start_seconds
+                updated_end_seconds = self._snap_timeline_value_seconds(
+                    max(start_seconds, min(global_end_seconds, end_seconds + delta_seconds)),
+                    event,
+                )
+            else:
+                updated_start_seconds = max(
+                    global_start_seconds,
+                    min(global_end_seconds - current_span_seconds, start_seconds + delta_seconds),
+                )
+                updated_end_seconds = updated_start_seconds + current_span_seconds
+
+            self._apply_timeline_work_area_update(updated_start_seconds, updated_end_seconds)
+            self._schedule_timeline_preview_refresh()
+            return "break"
+
+        return "break"
+
+    def _on_timeline_button_release(self, _event=None) -> str | None:
+        if self.timeline_drag_state is None:
+            return None
+
+        self.timeline_drag_state = None
+        self._schedule_timeline_preview_refresh(immediate=True)
+        return "break"
+
+    @staticmethod
+    def _normalize_signed_zero(value: float) -> float:
+        if abs(value) < 1e-9:
+            return 0.0
+        return float(value)
+
+    def _snap_timeline_value_seconds(self, value: float, event) -> float:
+        step_seconds = 0.1 if bool(getattr(event, "state", 0) & 0x0001) else 1.0
+        snapped_value = round(float(value) / step_seconds) * step_seconds
+        return self._normalize_signed_zero(snapped_value)
+
+    def _snap_timeline_delta_seconds(self, delta_seconds: float, event) -> float:
+        return self._snap_timeline_value_seconds(delta_seconds, event)
+
+    def _apply_timeline_session_updates(self, updated_session_by_id: dict[str, LoadedCsvSession]) -> None:
+        preferred_selection = list(self.get_selected_session_ids()) or list(updated_session_by_id)
+        self.sessions = [
+            updated_session_by_id.get(session.session_id, session)
+            for session in self.sessions
+        ]
+        self.refresh_session_tree(preferred_selection=preferred_selection)
+        self.configure_trim_controls(preserve_range=True)
+
+    def _apply_timeline_work_area_update(self, start_seconds: float, end_seconds: float) -> None:
+        self._updating_trim_controls = True
+        try:
+            self.trim_start_var.set(float(start_seconds))
+            self.trim_end_var.set(float(end_seconds))
+            self.update_trim_labels()
+        finally:
+            self._updating_trim_controls = False
+        self.refresh_timeline()
+
+    def _schedule_timeline_preview_refresh(self, *, immediate: bool = False) -> None:
+        if self.timeline_preview_after_id is not None:
+            try:
+                self.after_cancel(self.timeline_preview_after_id)
+            except tk.TclError:
+                pass
+            self.timeline_preview_after_id = None
+
+        if immediate:
+            self.schedule_preview_refresh(immediate=True)
+            return
+
+        self.timeline_preview_after_id = self.after(140, self._run_timeline_preview_refresh)
+
+    def _run_timeline_preview_refresh(self) -> None:
+        self.timeline_preview_after_id = None
+        self.schedule_preview_refresh(immediate=True)
+
+    def reset_selected_session_offsets(self) -> None:
+        target_session_ids = self.get_selected_session_ids() or tuple(session.session_id for session in self.get_render_sessions())
+        updated_session_by_id = {}
+        for session_id in target_session_ids:
+            session = self.get_session_by_id(session_id)
+            if session is None:
+                continue
+            updated_session_by_id[session_id] = replace(session, offset_seconds=0.0)
+        if not updated_session_by_id:
+            return
+
+        self._apply_timeline_session_updates(updated_session_by_id)
+        self.schedule_preview_refresh(immediate=True)
+        self.status_var.set("已重置所选文件的偏移。")
+
+    def reset_selected_session_source_trims(self) -> None:
+        target_session_ids = self.get_selected_session_ids() or tuple(session.session_id for session in self.get_render_sessions())
+        updated_session_by_id = {}
+        for session_id in target_session_ids:
+            session = self.get_session_by_id(session_id)
+            if session is None:
+                continue
+            updated_session_by_id[session_id] = replace(
+                session,
+                source_trim_start_seconds=0.0,
+                source_trim_end_seconds=None,
+            )
+        if not updated_session_by_id:
+            return
+
+        self._apply_timeline_session_updates(updated_session_by_id)
+        self.schedule_preview_refresh(immediate=True)
+        self.status_var.set("已重置所选文件的有效片段。")
+
+    def reset_work_area(self) -> None:
+        if not self.get_render_sessions():
+            return
+
+        global_start_seconds, global_end_seconds = self.get_global_time_bounds()
+        self._apply_timeline_work_area_update(global_start_seconds, global_end_seconds)
+        self.schedule_preview_refresh(immediate=True)
+        self.status_var.set("已重置全局工作区。")
 
     def browse_csv(self) -> None:
         file_paths = filedialog.askopenfilenames(
@@ -1955,6 +2629,7 @@ class HWiNFOPlotterApp(tk.Tk):
                     else current_session
                     for current_session in self.sessions
                 ]
+                self.refresh_session_tree(preferred_selection=self.get_selected_session_ids())
 
                 if preload_result.error_message is not None:
                     if not self.get_selected_series_keys():
@@ -1983,6 +2658,12 @@ class HWiNFOPlotterApp(tk.Tk):
             except tk.TclError:
                 pass
             self.process_results_after_id = None
+        if self.default_csv_after_id is not None:
+            try:
+                self.after_cancel(self.default_csv_after_id)
+            except tk.TclError:
+                pass
+            self.default_csv_after_id = None
         if self.file_drop_manager is not None:
             self.file_drop_manager.unregister()
             self.file_drop_manager = None
@@ -2000,6 +2681,12 @@ class HWiNFOPlotterApp(tk.Tk):
             except tk.TclError:
                 pass
             self.preview_display_after_id = None
+        if self.timeline_preview_after_id is not None:
+            try:
+                self.after_cancel(self.timeline_preview_after_id)
+            except tk.TclError:
+                pass
+            self.timeline_preview_after_id = None
         self.destroy()
 
     def get_selected_series_keys(self) -> list[SeriesKey]:

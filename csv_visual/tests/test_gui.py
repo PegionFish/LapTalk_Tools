@@ -43,6 +43,8 @@ def build_session(
     offset_seconds: float = 0.0,
     is_reference: bool = False,
     base_value: float = 1.0,
+    source_trim_start_seconds: float = 0.0,
+    source_trim_end_seconds: float | None = None,
 ) -> LoadedCsvSession:
     return LoadedCsvSession(
         session_id=session_id,
@@ -50,7 +52,21 @@ def build_session(
         data=build_synthetic_data(f"{alias}.csv", base_value=base_value),
         offset_seconds=offset_seconds,
         is_reference=is_reference,
+        source_trim_start_seconds=source_trim_start_seconds,
+        source_trim_end_seconds=source_trim_end_seconds,
     )
+
+
+def timeline_item_center(app: HWiNFOPlotterApp, item_id: int) -> tuple[int, int]:
+    x1, y1, x2, y2 = app.timeline_canvas.bbox(item_id)
+    return int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+
+def timeline_hit_item(app: HWiNFOPlotterApp, action: str, session_id: str | None = None) -> int:
+    for item_id, hit in app.timeline_hit_regions.items():
+        if hit == (action, session_id):
+            return item_id
+    raise AssertionError(f"未找到时间轴命中区域：{action}, {session_id}")
 
 
 class GuiBehaviorTests(unittest.TestCase):
@@ -106,6 +122,208 @@ class GuiBehaviorTests(unittest.TestCase):
 
             self.assertGreaterEqual(app.column_listbox.winfo_height(), 120)
             self.assertGreater(app.control_scroll_canvas.winfo_height(), 0)
+        finally:
+            app.on_close()
+
+    def test_four_module_layout_containers_exist(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+
+            self.assertTrue(app.file_management_module.winfo_exists())
+            self.assertTrue(app.preview_module.winfo_exists())
+            self.assertTrue(app.parameter_chart_module.winfo_exists())
+            self.assertTrue(app.time_editing_module.winfo_exists())
+            self.assertTrue(app.timeline_canvas.winfo_exists())
+        finally:
+            app.on_close()
+
+    def test_session_tree_selection_refreshes_timeline_clip_highlight(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session("run_a", "RunA", is_reference=True),
+                build_session("run_b", "RunB", base_value=5.0),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_b"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            body_id = app.timeline_clip_item_by_session_id["run_b"]
+
+            self.assertEqual(app.timeline_canvas.itemcget(body_id, "width"), "2.0")
+        finally:
+            app.on_close()
+
+    def test_clicking_timeline_clip_selects_session_tree_row(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session("run_a", "RunA", is_reference=True),
+                build_session("run_b", "RunB", base_value=5.0),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+            x_position, y_position = timeline_item_center(app, app.timeline_clip_item_by_session_id["run_b"])
+
+            result = app._on_timeline_button_press(SimpleNamespace(x=x_position, y=y_position, state=0))
+
+            self.assertEqual(result, "break")
+            self.assertEqual(app.get_selected_session_ids(), ("run_b",))
+        finally:
+            app.on_close()
+
+    def test_dragging_timeline_clip_updates_offset(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+            x_position, y_position = timeline_item_center(app, app.timeline_clip_item_by_session_id["run_a"])
+
+            with patch.object(app, "_schedule_timeline_preview_refresh") as mock_refresh:
+                app._on_timeline_button_press(SimpleNamespace(x=x_position, y=y_position, state=0))
+                app._on_timeline_drag(
+                    SimpleNamespace(
+                        x=x_position + int(app.timeline_pixels_per_second * 2.2),
+                        y=y_position,
+                        state=0,
+                    )
+                )
+
+            self.assertEqual(app.sessions[0].offset_seconds, 2.0)
+            mock_refresh.assert_called()
+        finally:
+            app.on_close()
+
+    def test_dragging_selected_timeline_clip_moves_multi_selection(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session("run_a", "RunA", is_reference=True),
+                build_session("run_b", "RunB", offset_seconds=5.0, base_value=5.0),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a", "run_b"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+            x_position, y_position = timeline_item_center(app, app.timeline_clip_item_by_session_id["run_b"])
+
+            with patch.object(app, "_schedule_timeline_preview_refresh"):
+                app._on_timeline_button_press(SimpleNamespace(x=x_position, y=y_position, state=0))
+                app._on_timeline_drag(
+                    SimpleNamespace(
+                        x=x_position + int(app.timeline_pixels_per_second * 1.2),
+                        y=y_position,
+                        state=0,
+                    )
+                )
+
+            self.assertEqual([session.offset_seconds for session in app.sessions], [1.0, 6.0])
+        finally:
+            app.on_close()
+
+    def test_dragging_timeline_clip_edges_updates_source_trim(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            left_x, left_y = timeline_item_center(app, timeline_hit_item(app, "trim_left", "run_a"))
+            with patch.object(app, "_schedule_timeline_preview_refresh"):
+                app._on_timeline_button_press(SimpleNamespace(x=left_x, y=left_y, state=0))
+                app._on_timeline_drag(
+                    SimpleNamespace(
+                        x=left_x + int(app.timeline_pixels_per_second * 1.2),
+                        y=left_y,
+                        state=0,
+                    )
+                )
+
+            self.assertEqual(app.sessions[0].source_trim_start_seconds, 1.0)
+
+            right_x, right_y = timeline_item_center(app, timeline_hit_item(app, "trim_right", "run_a"))
+            with patch.object(app, "_schedule_timeline_preview_refresh"):
+                app._on_timeline_button_press(SimpleNamespace(x=right_x, y=right_y, state=0))
+                app._on_timeline_drag(
+                    SimpleNamespace(
+                        x=right_x - int(app.timeline_pixels_per_second * 1.2),
+                        y=right_y,
+                        state=0,
+                    )
+                )
+
+            self.assertEqual(app.sessions[0].source_trim_end_seconds, 2.0)
+        finally:
+            app.on_close()
+
+    def test_dragging_timeline_work_area_handle_updates_visible_range(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+            x_position, y_position = timeline_item_center(app, timeline_hit_item(app, "work_area_start"))
+
+            with patch.object(app, "_schedule_timeline_preview_refresh"):
+                app._on_timeline_button_press(SimpleNamespace(x=x_position, y=y_position, state=0))
+                app._on_timeline_drag(
+                    SimpleNamespace(
+                        x=x_position + int(app.timeline_pixels_per_second * 1.2),
+                        y=y_position,
+                        state=0,
+                    )
+                )
+
+            self.assertEqual(app.get_visible_range_seconds(), (1.0, 3.0))
+        finally:
+            app.on_close()
+
+    def test_timeline_release_triggers_immediate_preview_refresh(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.timeline_drag_state = {"action": "move_clip"}
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                result = app._on_timeline_button_release()
+
+            self.assertEqual(result, "break")
+            mock_refresh.assert_called_once_with(immediate=True)
         finally:
             app.on_close()
 

@@ -20,12 +20,16 @@ from hwinfo_plotter.core import (
     build_figure,
     choose_best_decoding,
     compute_global_time_bounds,
+    compute_session_active_timeline_range,
+    compute_session_timeline_range,
     decode_csv_bytes,
+    filter_visible_series,
     format_compact_elapsed_time,
     load_hwinfo_csv,
     normalize_offsets_for_reference,
     parse_numeric_value,
     render_figure_png_bytes,
+    resolve_session_source_trim_range,
     resolve_tick_interval_seconds,
     save_figure,
 )
@@ -78,6 +82,8 @@ def build_loaded_session(
     *,
     offset_seconds: float = 0.0,
     is_reference: bool = False,
+    source_trim_start_seconds: float = 0.0,
+    source_trim_end_seconds: float | None = None,
 ) -> LoadedCsvSession:
     base_time = datetime(2026, 4, 13, 12, 0, 0)
     data = HWiNFOData(
@@ -102,6 +108,8 @@ def build_loaded_session(
         data=data,
         offset_seconds=offset_seconds,
         is_reference=is_reference,
+        source_trim_start_seconds=source_trim_start_seconds,
+        source_trim_end_seconds=source_trim_end_seconds,
     )
 
 
@@ -548,6 +556,67 @@ class CoreSmokeTests(unittest.TestCase):
 
         self.assertEqual(compute_global_time_bounds(sessions), (-5.0, 3.0))
 
+    def test_default_source_trim_matches_full_session_range(self) -> None:
+        session = build_loaded_session("run_a", "RunA", offset_seconds=5.0)
+
+        self.assertEqual(resolve_session_source_trim_range(session), (0.0, 3.0))
+        self.assertEqual(compute_session_timeline_range(session), (5.0, 8.0))
+        self.assertEqual(compute_session_active_timeline_range(session), (5.0, 8.0))
+
+    def test_filter_visible_series_applies_source_trim_before_offset(self) -> None:
+        session = build_loaded_session(
+            "run_a",
+            "RunA",
+            offset_seconds=5.0,
+            source_trim_start_seconds=1.0,
+            source_trim_end_seconds=2.0,
+        )
+
+        visible_series = filter_visible_series((session,), [SeriesKey("run_a", 2)])
+
+        self.assertEqual(len(visible_series), 1)
+        self.assertEqual(list(visible_series[0].x_values), [6.0, 7.0])
+        self.assertEqual(list(visible_series[0].y_values), [2.0, 3.0])
+
+    def test_source_trim_and_global_work_area_both_apply_to_comparison_series(self) -> None:
+        session = build_loaded_session(
+            "run_a",
+            "RunA",
+            offset_seconds=5.0,
+            source_trim_start_seconds=1.0,
+            source_trim_end_seconds=3.0,
+        )
+
+        visible_series = filter_visible_series(
+            (session,),
+            [SeriesKey("run_a", 2)],
+            visible_range_seconds=(7.0, 8.0),
+        )
+
+        self.assertEqual(len(visible_series), 1)
+        self.assertEqual(list(visible_series[0].x_values), [7.0, 8.0])
+        self.assertEqual(list(visible_series[0].y_values), [3.0, 4.0])
+
+    def test_global_time_bounds_use_active_trim_ranges(self) -> None:
+        sessions = (
+            build_loaded_session(
+                "run_a",
+                "RunA",
+                is_reference=True,
+                source_trim_start_seconds=1.0,
+                source_trim_end_seconds=2.0,
+            ),
+            build_loaded_session(
+                "run_b",
+                "RunB",
+                offset_seconds=10.0,
+                source_trim_start_seconds=2.0,
+                source_trim_end_seconds=3.0,
+            ),
+        )
+
+        self.assertEqual(compute_global_time_bounds(sessions), (1.0, 13.0))
+
     def test_normalize_offsets_for_reference_preserves_relative_layout(self) -> None:
         sessions = (
             build_loaded_session("run_a", "RunA", is_reference=True),
@@ -559,6 +628,23 @@ class CoreSmokeTests(unittest.TestCase):
 
         self.assertEqual([session.offset_seconds for session in normalized_sessions], [-8.0, 0.0, -11.0])
         self.assertEqual([session.is_reference for session in normalized_sessions], [False, True, False])
+
+    def test_normalize_offsets_for_reference_preserves_source_trim_ranges(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session(
+                "run_b",
+                "RunB",
+                offset_seconds=8.0,
+                source_trim_start_seconds=1.0,
+                source_trim_end_seconds=2.0,
+            ),
+        )
+
+        normalized_sessions = normalize_offsets_for_reference(sessions, "run_b")
+
+        self.assertEqual(normalized_sessions[1].source_trim_start_seconds, 1.0)
+        self.assertEqual(normalized_sessions[1].source_trim_end_seconds, 2.0)
 
     def test_build_comparison_figure_offsets_each_session_x_axis(self) -> None:
         sessions = (

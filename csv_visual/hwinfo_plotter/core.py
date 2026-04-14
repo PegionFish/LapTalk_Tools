@@ -208,6 +208,8 @@ class LoadedCsvSession:
     is_visible: bool = True
     preload_ready: bool = False
     preload_error: str | None = None
+    source_trim_start_seconds: float = 0.0
+    source_trim_end_seconds: float | None = None
 
 
 def build_series_descriptors(sessions: Sequence[LoadedCsvSession]) -> list[SeriesDescriptor]:
@@ -236,13 +238,61 @@ def align_series_x_values(x_values: Sequence[float], offset_seconds: float) -> l
     return [float(x_value) + resolved_offset for x_value in x_values]
 
 
+def get_session_source_duration(session: LoadedCsvSession) -> float:
+    if not session.data.elapsed_seconds:
+        return 0.0
+
+    return max(0.0, float(session.data.elapsed_seconds[-1]) - float(session.data.elapsed_seconds[0]))
+
+
+def resolve_session_source_trim_range(session: LoadedCsvSession) -> tuple[float, float]:
+    if not session.data.elapsed_seconds:
+        return 0.0, 0.0
+
+    source_start_seconds = float(session.data.elapsed_seconds[0])
+    source_end_seconds = float(session.data.elapsed_seconds[-1])
+    trim_start_seconds = max(
+        source_start_seconds,
+        min(float(session.source_trim_start_seconds), source_end_seconds),
+    )
+    if session.source_trim_end_seconds is None:
+        trim_end_seconds = source_end_seconds
+    else:
+        trim_end_seconds = max(
+            source_start_seconds,
+            min(float(session.source_trim_end_seconds), source_end_seconds),
+        )
+    if trim_end_seconds < trim_start_seconds:
+        trim_end_seconds = trim_start_seconds
+    return float(trim_start_seconds), float(trim_end_seconds)
+
+
+def compute_session_timeline_range(session: LoadedCsvSession) -> tuple[float, float]:
+    if not session.data.elapsed_seconds:
+        start_seconds = float(session.offset_seconds)
+        return start_seconds, start_seconds + 1.0
+
+    offset_seconds = float(session.offset_seconds)
+    return (
+        float(session.data.elapsed_seconds[0]) + offset_seconds,
+        float(session.data.elapsed_seconds[-1]) + offset_seconds,
+    )
+
+
+def compute_session_active_timeline_range(session: LoadedCsvSession) -> tuple[float, float]:
+    trim_start_seconds, trim_end_seconds = resolve_session_source_trim_range(session)
+    offset_seconds = float(session.offset_seconds)
+    return trim_start_seconds + offset_seconds, trim_end_seconds + offset_seconds
+
+
 def compute_global_time_bounds(sessions: Sequence[LoadedCsvSession]) -> tuple[float, float]:
     visible_sessions = [session for session in sessions if session.is_visible and session.data.elapsed_seconds]
     if not visible_sessions:
         return 0.0, 1.0
 
-    start_seconds = min(session.data.elapsed_seconds[0] + float(session.offset_seconds) for session in visible_sessions)
-    end_seconds = max(session.data.elapsed_seconds[-1] + float(session.offset_seconds) for session in visible_sessions)
+    active_ranges = [compute_session_active_timeline_range(session) for session in visible_sessions]
+    start_seconds = min(active_start_seconds for active_start_seconds, _ in active_ranges)
+    end_seconds = max(active_end_seconds for _, active_end_seconds in active_ranges)
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 1.0
     return float(start_seconds), float(end_seconds)
@@ -313,10 +363,20 @@ def filter_visible_series(
         if not y_values:
             continue
 
-        aligned_x_values = align_series_x_values(x_values, session.offset_seconds)
+        source_start_seconds, source_end_seconds = resolve_session_source_trim_range(session)
+        source_trimmed_x_values, source_trimmed_y_values = trim_series_to_range(
+            x_values,
+            y_values,
+            source_start_seconds,
+            source_end_seconds,
+        )
+        if not source_trimmed_y_values:
+            continue
+
+        aligned_x_values = align_series_x_values(source_trimmed_x_values, session.offset_seconds)
         trimmed_x_values, trimmed_y_values = trim_series_to_range(
             aligned_x_values,
-            y_values,
+            source_trimmed_y_values,
             visible_start_seconds,
             visible_end_seconds,
         )
