@@ -405,23 +405,34 @@ class HWiNFOPlotterApp(tk.Tk):
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=3)
         self.columnconfigure(1, weight=7)
-        self.rowconfigure(0, weight=8)
-        self.rowconfigure(1, weight=2)
-        self.rowconfigure(2, weight=0)
+        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=0)
 
-        self._build_file_management_module(self)
-        self._build_preview_module(self)
-        self._build_parameter_and_chart_module(self)
-        self._build_time_editing_module(self)
+        self.left_column = ttk.Frame(self)
+        self.left_column.grid(row=0, column=0, sticky="nsew", padx=(14, 8), pady=(14, 10))
+        self.left_column.columnconfigure(0, weight=1)
+        self.left_column.rowconfigure(0, weight=2)
+        self.left_column.rowconfigure(1, weight=8)
+
+        self.right_column = ttk.Frame(self)
+        self.right_column.grid(row=0, column=1, sticky="nsew", padx=(0, 14), pady=(14, 10))
+        self.right_column.columnconfigure(0, weight=1)
+        self.right_column.rowconfigure(0, weight=8)
+        self.right_column.rowconfigure(1, weight=2)
+
+        self._build_file_management_module(self.left_column)
+        self._build_parameter_and_chart_module(self.left_column)
+        self._build_preview_module(self.right_column)
+        self._build_time_editing_module(self.right_column)
 
         status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor="w", padding=(10, 6))
-        status_bar.grid(row=2, column=0, columnspan=2, sticky="ew")
+        status_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
         self._bind_mousewheel_events()
         self.refresh_timeline()
 
     def _build_file_management_module(self, parent: tk.Misc) -> None:
         self.file_management_module = ttk.Labelframe(parent, text="文件管理", padding=(10, 8, 10, 8))
-        self.file_management_module.grid(row=0, column=0, sticky="nsew", padx=(14, 8), pady=(14, 10))
+        self.file_management_module.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         self.file_management_module.columnconfigure(0, weight=1)
         self.file_management_module.rowconfigure(0, weight=1)
 
@@ -465,7 +476,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _build_parameter_and_chart_module(self, parent: tk.Misc) -> None:
         self.parameter_chart_module = ttk.Labelframe(parent, text="参数与图表设置", padding=(10, 8, 10, 8))
-        self.parameter_chart_module.grid(row=1, column=0, sticky="nsew", padx=(14, 8), pady=(0, 10))
+        self.parameter_chart_module.grid(row=1, column=0, sticky="nsew")
         self.parameter_chart_module.columnconfigure(0, weight=1)
         self.parameter_chart_module.rowconfigure(0, weight=1)
 
@@ -749,7 +760,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _build_preview_module(self, parent: tk.Misc) -> None:
         self.preview_module = ttk.Labelframe(parent, text="图表预览", padding=8)
-        self.preview_module.grid(row=0, column=1, sticky="nsew", padx=(0, 14), pady=(14, 10))
+        self.preview_module.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         self.preview_module.columnconfigure(0, weight=1)
         self.preview_module.rowconfigure(0, weight=1)
 
@@ -770,7 +781,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def _build_time_editing_module(self, parent: tk.Misc) -> None:
         self.time_editing_module = ttk.Labelframe(parent, text="时间轴与可视范围", padding=(10, 8, 10, 8))
-        self.time_editing_module.grid(row=1, column=1, sticky="nsew", padx=(0, 14), pady=(0, 10))
+        self.time_editing_module.grid(row=1, column=0, sticky="nsew")
         self.time_editing_module.columnconfigure(0, weight=1)
         self.time_editing_module.rowconfigure(1, weight=1)
 

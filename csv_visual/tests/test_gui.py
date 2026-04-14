@@ -149,9 +149,12 @@ class GuiBehaviorTests(unittest.TestCase):
 
             self.assertEqual(int(app.grid_columnconfigure(0)["weight"]), 3)
             self.assertEqual(int(app.grid_columnconfigure(1)["weight"]), 7)
-            self.assertEqual(int(app.grid_rowconfigure(0)["weight"]), 8)
-            self.assertEqual(int(app.grid_rowconfigure(1)["weight"]), 2)
+            self.assertEqual(int(app.left_column.grid_rowconfigure(0)["weight"]), 2)
+            self.assertEqual(int(app.left_column.grid_rowconfigure(1)["weight"]), 8)
+            self.assertEqual(int(app.right_column.grid_rowconfigure(0)["weight"]), 8)
+            self.assertEqual(int(app.right_column.grid_rowconfigure(1)["weight"]), 2)
             self.assertGreater(app.preview_module.winfo_width(), app.file_management_module.winfo_width())
+            self.assertGreater(app.parameter_chart_module.winfo_height(), app.file_management_module.winfo_height())
             self.assertGreater(app.preview_module.winfo_height(), app.time_editing_module.winfo_height())
         finally:
             app.on_close()
