@@ -287,6 +287,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self._updating_session_editor = False
         self.preview_label: ttk.Label | None = None
         self.preview_image: tk.PhotoImage | None = None
+        self.session_alias_entry: ttk.Entry | None = None
+        self.session_offset_entry: ttk.Entry | None = None
         self.preview_source_png_bytes: bytes | None = None
         self.preview_source_size: tuple[int, int] | None = None
         self.preview_display_size: tuple[int, int] | None = None
@@ -402,38 +404,25 @@ class HWiNFOPlotterApp(tk.Tk):
             self.default_csv_after_id = self.after(100, lambda path=default_csv: self.add_csv_files((path,)))
 
     def _build_layout(self) -> None:
-        self.columnconfigure(0, weight=1)
-        self.rowconfigure(0, weight=1)
-        self.rowconfigure(1, weight=0)
+        self.columnconfigure(0, weight=3)
+        self.columnconfigure(1, weight=7)
+        self.rowconfigure(0, weight=8)
+        self.rowconfigure(1, weight=2)
+        self.rowconfigure(2, weight=0)
 
-        self.root_paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
-        self.root_paned.grid(row=0, column=0, sticky="nsew", padx=14, pady=(14, 10))
-
-        self.left_column = ttk.Frame(self.root_paned)
-        self.right_column = ttk.Frame(self.root_paned)
-        self.left_column.columnconfigure(0, weight=1)
-        self.left_column.rowconfigure(0, weight=0)
-        self.left_column.rowconfigure(1, weight=1)
-        self.right_column.columnconfigure(0, weight=1)
-        self.right_column.rowconfigure(0, weight=3)
-        self.right_column.rowconfigure(1, weight=1)
-
-        self.root_paned.add(self.left_column, weight=1)
-        self.root_paned.add(self.right_column, weight=3)
-
-        self._build_file_management_module(self.left_column)
-        self._build_parameter_and_chart_module(self.left_column)
-        self._build_preview_module(self.right_column)
-        self._build_time_editing_module(self.right_column)
+        self._build_file_management_module(self)
+        self._build_preview_module(self)
+        self._build_parameter_and_chart_module(self)
+        self._build_time_editing_module(self)
 
         status_bar = ttk.Label(self, textvariable=self.status_var, relief=tk.SUNKEN, anchor="w", padding=(10, 6))
-        status_bar.grid(row=1, column=0, sticky="ew")
+        status_bar.grid(row=2, column=0, columnspan=2, sticky="ew")
         self._bind_mousewheel_events()
         self.refresh_timeline()
 
     def _build_file_management_module(self, parent: tk.Misc) -> None:
-        self.file_management_module = ttk.Labelframe(parent, text="模块 1 · 文件管理", padding=(10, 8, 10, 8))
-        self.file_management_module.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        self.file_management_module = ttk.Labelframe(parent, text="文件管理", padding=(10, 8, 10, 8))
+        self.file_management_module.grid(row=0, column=0, sticky="nsew", padx=(14, 8), pady=(14, 10))
         self.file_management_module.columnconfigure(0, weight=1)
         self.file_management_module.rowconfigure(0, weight=1)
 
@@ -444,25 +433,17 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.session_tree = ttk.Treeview(
             session_table_frame,
-            columns=("alias", "filename", "duration", "offset", "active_trim", "reference", "preload"),
+            columns=("filename", "alias", "duration"),
             show="headings",
             selectmode="extended",
-            height=6,
+            height=10,
         )
+        self.session_tree.heading("filename", text="文件名")
         self.session_tree.heading("alias", text="别名")
-        self.session_tree.heading("filename", text="文件")
         self.session_tree.heading("duration", text="时长")
-        self.session_tree.heading("offset", text="偏移")
-        self.session_tree.heading("active_trim", text="有效片段")
-        self.session_tree.heading("reference", text="基准")
-        self.session_tree.heading("preload", text="预载")
-        self.session_tree.column("alias", width=130, anchor="w")
-        self.session_tree.column("filename", width=170, anchor="w")
-        self.session_tree.column("duration", width=80, anchor="center")
-        self.session_tree.column("offset", width=70, anchor="center")
-        self.session_tree.column("active_trim", width=150, anchor="center")
-        self.session_tree.column("reference", width=48, anchor="center")
-        self.session_tree.column("preload", width=58, anchor="center")
+        self.session_tree.column("filename", width=180, anchor="w")
+        self.session_tree.column("alias", width=120, anchor="w")
+        self.session_tree.column("duration", width=88, anchor="center")
         self.session_tree.grid(row=0, column=0, sticky="nsew")
         self.session_tree.bind("<<TreeviewSelect>>", self.on_session_selection_changed)
 
@@ -483,70 +464,9 @@ class HWiNFOPlotterApp(tk.Tk):
         ttk.Button(file_button_row, text="清空全部", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=4)
         ttk.Button(file_button_row, text="设为基准", command=self.set_selected_session_as_reference).grid(row=0, column=3, sticky="ew", padx=(4, 0))
 
-        session_detail_frame = ttk.Frame(self.file_management_module)
-        session_detail_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        session_detail_frame.columnconfigure(1, weight=1)
-        session_detail_frame.columnconfigure(3, weight=1)
-
-        ttk.Label(session_detail_frame, text="别名").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        self.session_alias_entry = ttk.Entry(session_detail_frame, textvariable=self.session_alias_var)
-        self.session_alias_entry.grid(row=0, column=1, sticky="ew")
-        self.session_alias_entry.bind("<Return>", self.apply_selected_session_details)
-        self.session_alias_entry.bind("<FocusOut>", self.apply_selected_session_details)
-
-        ttk.Label(session_detail_frame, text="偏移(秒)").grid(row=0, column=2, sticky="w", padx=(12, 8))
-        self.session_offset_entry = ttk.Entry(session_detail_frame, textvariable=self.session_offset_var, width=12)
-        self.session_offset_entry.grid(row=0, column=3, sticky="ew")
-        self.session_offset_entry.bind("<Return>", self.apply_selected_session_details)
-        self.session_offset_entry.bind("<FocusOut>", self.apply_selected_session_details)
-
-        offset_button_row = ttk.Frame(self.file_management_module)
-        offset_button_row.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        offset_button_row.columnconfigure((0, 1, 2, 3, 4), weight=1)
-
-        ttk.Button(offset_button_row, text="-10s", command=lambda: self.nudge_selected_session_offset(-10.0)).grid(
-            row=0,
-            column=0,
-            sticky="ew",
-            padx=(0, 4),
-        )
-        ttk.Button(offset_button_row, text="-1s", command=lambda: self.nudge_selected_session_offset(-1.0)).grid(
-            row=0,
-            column=1,
-            sticky="ew",
-            padx=4,
-        )
-        ttk.Button(offset_button_row, text="应用编辑", command=self.apply_selected_session_details).grid(
-            row=0,
-            column=2,
-            sticky="ew",
-            padx=4,
-        )
-        ttk.Button(offset_button_row, text="+1s", command=lambda: self.nudge_selected_session_offset(1.0)).grid(
-            row=0,
-            column=3,
-            sticky="ew",
-            padx=4,
-        )
-        ttk.Button(offset_button_row, text="+10s", command=lambda: self.nudge_selected_session_offset(10.0)).grid(
-            row=0,
-            column=4,
-            sticky="ew",
-            padx=(4, 0),
-        )
-
-        ttk.Label(
-            self.file_management_module,
-            textvariable=self.session_source_trim_var,
-        ).grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Label(
-            self.file_management_module,
-            text="正偏移向右移动曲线；模块 4 也支持拖动片段对齐和边缘裁剪。",
-        ).grid(row=5, column=0, sticky="w", pady=(4, 0))
-
     def _build_parameter_and_chart_module(self, parent: tk.Misc) -> None:
-        self.parameter_chart_module = ttk.Labelframe(parent, text="模块 3 · 参数筛选 + 图表设置", padding=(10, 8, 10, 8))
-        self.parameter_chart_module.grid(row=1, column=0, sticky="nsew")
+        self.parameter_chart_module = ttk.Labelframe(parent, text="参数与图表设置", padding=(10, 8, 10, 8))
+        self.parameter_chart_module.grid(row=1, column=0, sticky="nsew", padx=(14, 8), pady=(0, 10))
         self.parameter_chart_module.columnconfigure(0, weight=1)
         self.parameter_chart_module.rowconfigure(0, weight=1)
 
@@ -829,8 +749,8 @@ class HWiNFOPlotterApp(tk.Tk):
         ttk.Button(action_row, text="导出透明 PNG", command=self.export_png).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
     def _build_preview_module(self, parent: tk.Misc) -> None:
-        self.preview_module = ttk.Labelframe(parent, text="模块 2 · 图表预览", padding=8)
-        self.preview_module.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        self.preview_module = ttk.Labelframe(parent, text="图表预览", padding=8)
+        self.preview_module.grid(row=0, column=1, sticky="nsew", padx=(0, 14), pady=(14, 10))
         self.preview_module.columnconfigure(0, weight=1)
         self.preview_module.rowconfigure(0, weight=1)
 
@@ -850,8 +770,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_placeholder.grid(row=0, column=0, sticky="nsew")
 
     def _build_time_editing_module(self, parent: tk.Misc) -> None:
-        self.time_editing_module = ttk.Labelframe(parent, text="模块 4 · 可视化范围 + 时间轴", padding=(10, 8, 10, 8))
-        self.time_editing_module.grid(row=1, column=0, sticky="nsew")
+        self.time_editing_module = ttk.Labelframe(parent, text="时间轴与可视范围", padding=(10, 8, 10, 8))
+        self.time_editing_module.grid(row=1, column=1, sticky="nsew", padx=(0, 14), pady=(0, 10))
         self.time_editing_module.columnconfigure(0, weight=1)
         self.time_editing_module.rowconfigure(1, weight=1)
 
@@ -896,7 +816,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.timeline_canvas = tk.Canvas(
             timeline_host,
-            height=220,
+            height=170,
             background="#f7f8fb",
             highlightthickness=1,
             highlightbackground="#d6dbe6",
@@ -963,26 +883,14 @@ class HWiNFOPlotterApp(tk.Tk):
             duration_text = "00:00:00"
             if session.data.elapsed_seconds:
                 duration_text = format_elapsed_time(session.data.elapsed_seconds[-1])
-            trim_start_seconds, trim_end_seconds = resolve_session_source_trim_range(session)
-            trim_text = f"{format_elapsed_time(trim_start_seconds)} → {format_elapsed_time(trim_end_seconds)}"
-            if session.preload_error:
-                preload_text = "错误"
-            elif session.preload_ready:
-                preload_text = "就绪"
-            else:
-                preload_text = "等待"
             self.session_tree.insert(
                 "",
                 tk.END,
                 iid=session.session_id,
                 values=(
-                    session.alias,
                     session.data.source_path.name,
+                    session.alias,
                     duration_text,
-                    self.format_offset_seconds(session.offset_seconds),
-                    trim_text,
-                    "是" if session.is_reference else "",
-                    preload_text,
                 ),
             )
 
@@ -1000,7 +908,6 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def sync_session_editor(self) -> None:
         selected_session = self.get_selected_session()
-        entry_state = tk.NORMAL if selected_session is not None else tk.DISABLED
 
         self._updating_session_editor = True
         try:
@@ -1017,9 +924,10 @@ class HWiNFOPlotterApp(tk.Tk):
                 )
         finally:
             self._updating_session_editor = False
-
-        self.session_alias_entry.configure(state=entry_state)
-        self.session_offset_entry.configure(state=entry_state)
+        if self.session_alias_entry is not None:
+            self.session_alias_entry.configure(state=tk.NORMAL if selected_session is not None else tk.DISABLED)
+        if self.session_offset_entry is not None:
+            self.session_offset_entry.configure(state=tk.NORMAL if selected_session is not None else tk.DISABLED)
 
     def on_session_selection_changed(self, _event=None) -> None:
         self.sync_session_editor()

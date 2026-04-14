@@ -135,6 +135,33 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertTrue(app.parameter_chart_module.winfo_exists())
             self.assertTrue(app.time_editing_module.winfo_exists())
             self.assertTrue(app.timeline_canvas.winfo_exists())
+            self.assertEqual(app.file_management_module.cget("text"), "文件管理")
+            self.assertEqual(app.preview_module.cget("text"), "图表预览")
+            self.assertEqual(app.parameter_chart_module.cget("text"), "参数与图表设置")
+            self.assertEqual(app.time_editing_module.cget("text"), "时间轴与可视范围")
+        finally:
+            app.on_close()
+
+    def test_layout_prioritizes_preview_area(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.update()
+
+            self.assertEqual(int(app.grid_columnconfigure(0)["weight"]), 3)
+            self.assertEqual(int(app.grid_columnconfigure(1)["weight"]), 7)
+            self.assertEqual(int(app.grid_rowconfigure(0)["weight"]), 8)
+            self.assertEqual(int(app.grid_rowconfigure(1)["weight"]), 2)
+            self.assertGreater(app.preview_module.winfo_width(), app.file_management_module.winfo_width())
+            self.assertGreater(app.preview_module.winfo_height(), app.time_editing_module.winfo_height())
+        finally:
+            app.on_close()
+
+    def test_file_management_tree_is_compact_and_has_no_offset_editors(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            self.assertEqual(app.session_tree.cget("columns"), ("filename", "alias", "duration"))
+            self.assertIsNone(app.session_alias_entry)
+            self.assertIsNone(app.session_offset_entry)
         finally:
             app.on_close()
 
