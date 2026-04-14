@@ -333,8 +333,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self.trim_end_label_var = tk.StringVar(value="00:00:00")
         self.trim_duration_label_var = tk.StringVar(value="可视化范围：00:00:00 → 00:00:00")
         self._updating_trim_controls = False
-        self.timeline_zoom_var = tk.DoubleVar(value=1.0)
-        self.timeline_status_var = tk.StringVar(value="时间轴：添加 CSV 后可拖动片段对齐、拖动边缘裁剪。")
+        self.timeline_zoom_factor = 1.0
+        self.timeline_status_var = tk.StringVar(value="时间轴：默认自适应窗口；滚轮缩放，拖动片段对齐或裁剪。")
         self.timeline_pixels_per_second = 12.0
         self.timeline_start_seconds = 0.0
         self.timeline_end_seconds = 60.0
@@ -391,7 +391,6 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_density_var.trace_add("write", self._on_time_density_changed)
         self.trim_start_var.trace_add("write", self._on_trim_start_changed)
         self.trim_end_var.trace_add("write", self._on_trim_end_changed)
-        self.timeline_zoom_var.trace_add("write", self._on_timeline_zoom_changed)
         self.update_time_density_label()
 
         self._build_layout()
@@ -777,37 +776,25 @@ class HWiNFOPlotterApp(tk.Tk):
 
         toolbar = ttk.Frame(self.time_editing_module)
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        toolbar.columnconfigure(1, weight=1)
+        toolbar.columnconfigure(0, weight=1)
 
-        ttk.Label(toolbar, text="缩放").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        tk.Scale(
+        ttk.Label(
             toolbar,
-            from_=0.25,
-            to=8.0,
-            resolution=0.25,
-            orient=tk.HORIZONTAL,
-            showvalue=False,
-            variable=self.timeline_zoom_var,
-        ).grid(row=0, column=1, sticky="ew")
+            text="时间轴默认自适应窗口；在时间轴上滚动鼠标滚轮可缩放细调。",
+        ).grid(row=0, column=0, sticky="w")
         ttk.Button(toolbar, text="重置所选对齐", command=self.reset_selected_session_offsets).grid(
             row=0,
-            column=2,
+            column=1,
             sticky="ew",
             padx=(8, 0),
         )
         ttk.Button(toolbar, text="重置所选裁剪", command=self.reset_selected_session_source_trims).grid(
             row=0,
-            column=3,
+            column=2,
             sticky="ew",
             padx=(8, 0),
         )
-        ttk.Button(toolbar, text="重置工作区", command=self.reset_work_area).grid(
-            row=0,
-            column=4,
-            sticky="ew",
-            padx=(8, 0),
-        )
-        ttk.Label(toolbar, textvariable=self.trim_duration_label_var).grid(row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        ttk.Label(toolbar, textvariable=self.trim_duration_label_var).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         timeline_host = ttk.Frame(self.time_editing_module)
         timeline_host.grid(row=1, column=0, sticky="nsew")
@@ -1149,6 +1136,9 @@ class HWiNFOPlotterApp(tk.Tk):
         if units == 0:
             return None
 
+        if event.widget is self.timeline_canvas:
+            return self._on_timeline_mousewheel(event, units)
+
         horizontal = bool(getattr(event, "state", 0) & 0x0001)
         scroll_command = self._resolve_mousewheel_scroll_command(event.widget, horizontal=horizontal)
         if scroll_command is None and horizontal:
@@ -1179,13 +1169,9 @@ class HWiNFOPlotterApp(tk.Tk):
             return None if horizontal else self.column_listbox.yview_scroll
         if widget is self.selected_series_listbox:
             return None if horizontal else self.selected_series_listbox.yview_scroll
-        if widget is self.timeline_canvas:
-            return self.timeline_canvas.xview_scroll if horizontal else self.timeline_canvas.yview_scroll
 
         if self._widget_is_descendant_of(widget, self.control_panel) or widget is self.control_scroll_canvas:
             return None if horizontal else self.control_scroll_canvas.yview_scroll
-        if self._widget_is_descendant_of(widget, self.time_editing_module):
-            return self.timeline_canvas.xview_scroll if horizontal else self.timeline_canvas.yview_scroll
 
         return None
 
@@ -1339,12 +1325,46 @@ class HWiNFOPlotterApp(tk.Tk):
             return
         self.schedule_preview_display_refresh()
 
-    def _on_timeline_zoom_changed(self, *_args) -> None:
-        self.timeline_pixels_per_second = max(6.0, 12.0 * float(self.timeline_zoom_var.get()))
-        self.refresh_timeline()
-
     def _on_timeline_canvas_configure(self, _event=None) -> None:
         self.refresh_timeline()
+
+    def _on_timeline_mousewheel(self, event, units: int) -> str:
+        if not self.get_render_sessions():
+            return "break"
+
+        zoom_multiplier = 1.12 if units < 0 else 1 / 1.12
+        updated_zoom_factor = min(8.0, max(1.0, self.timeline_zoom_factor * zoom_multiplier))
+        if abs(updated_zoom_factor - self.timeline_zoom_factor) < 1e-9:
+            return "break"
+
+        anchor_canvas_x = self.timeline_canvas.canvasx(event.x)
+        anchor_seconds = self._timeline_x_to_seconds(anchor_canvas_x)
+        self.timeline_zoom_factor = updated_zoom_factor
+        self.refresh_timeline()
+        self._restore_timeline_anchor(anchor_seconds, event.x)
+        return "break"
+
+    def _restore_timeline_anchor(self, anchor_seconds: float, viewport_x: float) -> None:
+        if not self.get_render_sessions():
+            return
+
+        scroll_region = self.timeline_canvas.cget("scrollregion")
+        if not scroll_region:
+            return
+
+        try:
+            _x1, _y1, x2, _y2 = [float(value) for value in str(scroll_region).split()]
+        except ValueError:
+            return
+
+        viewport_width = max(float(self.timeline_canvas.winfo_width()), 1.0)
+        target_left_x = self._timeline_seconds_to_x(anchor_seconds) - float(viewport_x)
+        max_left_x = max(0.0, x2 - viewport_width)
+        clamped_left_x = min(max(0.0, target_left_x), max_left_x)
+        if x2 <= 0:
+            return
+
+        self.timeline_canvas.xview_moveto(clamped_left_x / x2)
 
     def get_timeline_bounds(self) -> tuple[float, float]:
         render_sessions = self.get_render_sessions()
@@ -1398,11 +1418,12 @@ class HWiNFOPlotterApp(tk.Tk):
                     fill="#5f6b7a",
                     text="添加 CSV 后，这里会显示统一时间轴。",
                 )
-                self.timeline_status_var.set("时间轴：添加 CSV 后可拖动片段对齐、拖动边缘裁剪。")
+                self.timeline_status_var.set("时间轴：默认自适应窗口；滚轮缩放，拖动片段对齐或裁剪。")
                 return
 
             metrics = self._get_timeline_metrics()
             self.timeline_start_seconds, self.timeline_end_seconds = self.get_timeline_bounds()
+            self.timeline_pixels_per_second = self._resolve_timeline_pixels_per_second(metrics)
             content_width = max(
                 canvas.winfo_width(),
                 int(
@@ -1424,7 +1445,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
             selected_count = len(self.get_selected_session_ids())
             self.timeline_status_var.set(
-                f"时间轴：{len(render_sessions)} 个文件，当前选中 {selected_count} 个；拖动主体对齐，拖动边缘裁剪。"
+                f"时间轴：{len(render_sessions)} 个文件，当前选中 {selected_count} 个；默认自适应窗口，滚轮可缩放细调。"
             )
         finally:
             self._refreshing_timeline = False
@@ -1444,6 +1465,13 @@ class HWiNFOPlotterApp(tk.Tk):
             "handle_width": 6.0,
             "bottom_padding": 28.0,
         }
+
+    def _resolve_timeline_pixels_per_second(self, metrics: dict[str, float]) -> float:
+        span_seconds = max(self.timeline_end_seconds - self.timeline_start_seconds, 1.0)
+        viewport_width = max(float(self.timeline_canvas.winfo_width()), 640.0)
+        usable_width = max(120.0, viewport_width - metrics["left_gutter"] - metrics["right_padding"])
+        fitted_pixels_per_second = usable_width / span_seconds
+        return max(0.1, fitted_pixels_per_second * self.timeline_zoom_factor)
 
     def _draw_timeline_axis(self, canvas: tk.Canvas, content_width: int, metrics: dict[str, float]) -> None:
         axis_y = metrics["axis_y"]
@@ -1520,7 +1548,7 @@ class HWiNFOPlotterApp(tk.Tk):
             top_y + metrics["work_area_height"] / 2,
             anchor="w",
             fill="#314463",
-            text="工作区",
+            text="可视范围",
             font=("Segoe UI", 9, "bold"),
         )
         start_handle_id = canvas.create_rectangle(

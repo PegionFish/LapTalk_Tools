@@ -165,6 +165,65 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_timeline_toolbar_uses_reset_buttons_without_work_area_button(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            button_texts = [
+                child.cget("text")
+                for child in app.time_editing_module.winfo_children()[0].winfo_children()
+                if child.winfo_class() == "TButton"
+            ]
+
+            self.assertEqual(button_texts, ["重置所选对齐", "重置所选裁剪"])
+        finally:
+            app.on_close()
+
+    def test_timeline_default_zoom_fits_canvas_width(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            metrics = app._get_timeline_metrics()
+            span_seconds = app.timeline_end_seconds - app.timeline_start_seconds
+            expected_pixels_per_second = (
+                max(float(app.timeline_canvas.winfo_width()), 640.0) - metrics["left_gutter"] - metrics["right_padding"]
+            ) / span_seconds
+
+            self.assertAlmostEqual(app.timeline_zoom_factor, 1.0)
+            self.assertAlmostEqual(app.timeline_pixels_per_second, expected_pixels_per_second, places=4)
+        finally:
+            app.on_close()
+
+    def test_mousewheel_on_timeline_adjusts_zoom_factor(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+            before_zoom_factor = app.timeline_zoom_factor
+            event = SimpleNamespace(widget=app.timeline_canvas, delta=120, num=None, state=0, x=60, y=60)
+
+            result = app._on_mousewheel(event)
+
+            self.assertEqual(result, "break")
+            self.assertGreater(app.timeline_zoom_factor, before_zoom_factor)
+        finally:
+            app.on_close()
+
     def test_session_tree_selection_refreshes_timeline_clip_highlight(self) -> None:
         app = HWiNFOPlotterApp()
         try:
