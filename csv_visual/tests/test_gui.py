@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import base64
+import tkinter as tk
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from hwinfo_plotter.app_about import AboutInfo, AboutLink
 from hwinfo_plotter.core import HWiNFOData, LoadedCsvSession, SensorColumn, SeriesKey
 from hwinfo_plotter.gui import HWiNFOPlotterApp, PreloadSeriesResult, fit_size_within_bounds
 
@@ -67,6 +69,19 @@ def timeline_hit_item(app: HWiNFOPlotterApp, action: str, session_id: str | None
         if hit == (action, session_id):
             return item_id
     raise AssertionError(f"未找到时间轴命中区域：{action}, {session_id}")
+
+
+def collect_widget_texts(widget) -> list[str]:
+    texts: list[str] = []
+    for child in widget.winfo_children():
+        try:
+            text = child.cget("text")
+        except (tk.TclError, KeyError):
+            text = ""
+        if text:
+            texts.append(text)
+        texts.extend(collect_widget_texts(child))
+    return texts
 
 
 class GuiBehaviorTests(unittest.TestCase):
@@ -138,7 +153,50 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(app.file_management_module.cget("text"), "文件管理")
             self.assertEqual(app.preview_module.cget("text"), "图表预览")
             self.assertEqual(app.parameter_chart_module.cget("text"), "参数与图表设置")
-            self.assertEqual(app.time_editing_module.cget("text"), "时间轴与可视范围")
+            self.assertEqual(app.time_editing_module.cget("text"), "时间轴")
+        finally:
+            app.on_close()
+
+    def test_about_window_uses_about_info_and_reuses_existing_window(self) -> None:
+        about_info = AboutInfo(
+            app_name="CSV可视化对比工具",
+            version_label="Version",
+            version="abc123",
+            distribution_prefix="Distributed under",
+            license_link=AboutLink("GPLv3", "https://example.com/gpl"),
+            repository_link=AboutLink("GitHub Repository", "https://example.com/repo"),
+            author_prefix="Author:",
+            author_link=AboutLink("Test Author", "https://example.com/author"),
+            affiliation_text="on behalf of",
+            organization_link=AboutLink("LapTalk", "https://example.com/laptalk"),
+            email_link=AboutLink("Email", "mailto:test@example.com"),
+        )
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            self.assertEqual(app.help_menu.entrycget(0, "label"), "关于")
+
+            with patch("hwinfo_plotter.gui.get_app_about_info", return_value=about_info):
+                app.open_about_window()
+                app.update_idletasks()
+                about_window = app.about_window
+                self.assertIsNotNone(about_window)
+                texts = collect_widget_texts(about_window)
+
+                self.assertIn("CSV可视化对比工具", texts)
+                self.assertIn("Version:", texts)
+                self.assertIn("abc123", texts)
+                self.assertIn("Distributed under", texts)
+                self.assertIn("GPLv3", texts)
+                self.assertIn("GitHub Repository", texts)
+                self.assertIn("Author:", texts)
+                self.assertIn("Test Author", texts)
+                self.assertIn(" on behalf of ", texts)
+                self.assertIn("LapTalk", texts)
+                self.assertIn("Email", texts)
+
+                app.open_about_window()
+                self.assertIs(app.about_window, about_window)
         finally:
             app.on_close()
 
@@ -149,10 +207,10 @@ class GuiBehaviorTests(unittest.TestCase):
 
             self.assertEqual(int(app.grid_columnconfigure(0)["weight"]), 3)
             self.assertEqual(int(app.grid_columnconfigure(1)["weight"]), 7)
-            self.assertEqual(int(app.left_column.grid_rowconfigure(0)["weight"]), 2)
-            self.assertEqual(int(app.left_column.grid_rowconfigure(1)["weight"]), 8)
-            self.assertEqual(int(app.right_column.grid_rowconfigure(0)["weight"]), 8)
-            self.assertEqual(int(app.right_column.grid_rowconfigure(1)["weight"]), 2)
+            self.assertEqual(int(app.left_column.grid_rowconfigure(0)["weight"]), 1)
+            self.assertEqual(int(app.left_column.grid_rowconfigure(1)["weight"]), 9)
+            self.assertEqual(int(app.right_column.grid_rowconfigure(0)["weight"]), 17)
+            self.assertEqual(int(app.right_column.grid_rowconfigure(1)["weight"]), 3)
             self.assertGreater(app.preview_module.winfo_width(), app.file_management_module.winfo_width())
             self.assertGreater(app.parameter_chart_module.winfo_height(), app.file_management_module.winfo_height())
             self.assertGreater(app.preview_module.winfo_height(), app.time_editing_module.winfo_height())
@@ -374,7 +432,7 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_dragging_timeline_work_area_handle_updates_visible_range(self) -> None:
+    def test_timeline_does_not_expose_global_visible_range_controls(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
@@ -386,19 +444,9 @@ class GuiBehaviorTests(unittest.TestCase):
             )
             app.update_idletasks()
             app.refresh_timeline()
-            x_position, y_position = timeline_item_center(app, timeline_hit_item(app, "work_area_start"))
 
-            with patch.object(app, "_schedule_timeline_preview_refresh"):
-                app._on_timeline_button_press(SimpleNamespace(x=x_position, y=y_position, state=0))
-                app._on_timeline_drag(
-                    SimpleNamespace(
-                        x=x_position + int(app.timeline_pixels_per_second * 1.2),
-                        y=y_position,
-                        state=0,
-                    )
-                )
-
-            self.assertEqual(app.get_visible_range_seconds(), (1.0, 3.0))
+            self.assertIsNone(app.get_visible_range_seconds())
+            self.assertFalse(any(action.startswith("work_area") for action, _session_id in app.timeline_hit_regions.values()))
         finally:
             app.on_close()
 
@@ -578,8 +626,6 @@ class GuiBehaviorTests(unittest.TestCase):
             app.time_density_var.set(10)
             app.fixed_time_interval_var.set("2")
             app.fixed_time_interval_unit_var.set("分钟")
-            app.trim_start_var.set(1)
-            app.trim_end_var.set(6)
             app.show_time_axis_var.set(False)
             app.show_value_axis_var.set(False)
             app.axis_color_var.set("111111")
@@ -608,7 +654,7 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(preview_request.style.value_text_color, "#444444")
             self.assertEqual(preview_request.style.legend_text_color, "#555555")
             self.assertEqual(preview_request.style.font_family, "Microsoft YaHei")
-            self.assertEqual(preview_request.visible_range_seconds, (1.0, 6.0))
+            self.assertIsNone(preview_request.visible_range_seconds)
         finally:
             app.on_close()
 

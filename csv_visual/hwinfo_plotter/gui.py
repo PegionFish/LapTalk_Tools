@@ -5,6 +5,7 @@ import ctypes
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from collections.abc import Sequence
 from ctypes import wintypes
 from dataclasses import dataclass, replace
@@ -13,6 +14,7 @@ from queue import Empty, Queue
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from uuid import uuid4
 
+from .app_about import AboutInfo, get_app_about_info
 from .core import (
     ChartStyle,
     DEFAULT_TIME_TICK_DENSITY,
@@ -287,6 +289,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self._updating_session_editor = False
         self.preview_label: ttk.Label | None = None
         self.preview_image: tk.PhotoImage | None = None
+        self.about_window: tk.Toplevel | None = None
         self.session_alias_entry: ttk.Entry | None = None
         self.session_offset_entry: ttk.Entry | None = None
         self.preview_source_png_bytes: bytes | None = None
@@ -327,12 +330,6 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_density_label_var = tk.StringVar()
         self.fixed_time_interval_var = tk.StringVar()
         self.fixed_time_interval_unit_var = tk.StringVar(value="自动")
-        self.trim_start_var = tk.DoubleVar(value=0.0)
-        self.trim_end_var = tk.DoubleVar(value=0.0)
-        self.trim_start_label_var = tk.StringVar(value="00:00:00")
-        self.trim_end_label_var = tk.StringVar(value="00:00:00")
-        self.trim_duration_label_var = tk.StringVar(value="可视化范围：00:00:00 → 00:00:00")
-        self._updating_trim_controls = False
         self.timeline_zoom_factor = 1.0
         self.timeline_status_var = tk.StringVar(value="时间轴：默认自适应窗口；滚轮缩放，拖动片段对齐或裁剪。")
         self.timeline_pixels_per_second = 12.0
@@ -341,7 +338,6 @@ class HWiNFOPlotterApp(tk.Tk):
         self.timeline_drag_state: dict[str, object] | None = None
         self.timeline_clip_item_by_session_id: dict[str, int] = {}
         self.timeline_hit_regions: dict[int, tuple[str, str | None]] = {}
-        self.timeline_work_area_item_ids: set[int] = set()
         self.timeline_preview_after_id: str | None = None
         self._refreshing_timeline = False
         self._updating_curve_only_mode = False
@@ -389,10 +385,9 @@ class HWiNFOPlotterApp(tk.Tk):
             option_var.trace_add("write", self._on_standard_chart_element_changed)
         self.curve_only_mode_var.trace_add("write", self._on_curve_only_mode_changed)
         self.time_density_var.trace_add("write", self._on_time_density_changed)
-        self.trim_start_var.trace_add("write", self._on_trim_start_changed)
-        self.trim_end_var.trace_add("write", self._on_trim_end_changed)
         self.update_time_density_label()
 
+        self._build_app_menu()
         self._build_layout()
         self.enable_file_drop()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -411,14 +406,14 @@ class HWiNFOPlotterApp(tk.Tk):
         self.left_column = ttk.Frame(self)
         self.left_column.grid(row=0, column=0, sticky="nsew", padx=(14, 8), pady=(14, 10))
         self.left_column.columnconfigure(0, weight=1)
-        self.left_column.rowconfigure(0, weight=2)
-        self.left_column.rowconfigure(1, weight=8)
+        self.left_column.rowconfigure(0, weight=1)
+        self.left_column.rowconfigure(1, weight=9)
 
         self.right_column = ttk.Frame(self)
         self.right_column.grid(row=0, column=1, sticky="nsew", padx=(0, 14), pady=(14, 10))
         self.right_column.columnconfigure(0, weight=1)
-        self.right_column.rowconfigure(0, weight=8)
-        self.right_column.rowconfigure(1, weight=2)
+        self.right_column.rowconfigure(0, weight=17)
+        self.right_column.rowconfigure(1, weight=3)
 
         self._build_file_management_module(self.left_column)
         self._build_parameter_and_chart_module(self.left_column)
@@ -429,6 +424,123 @@ class HWiNFOPlotterApp(tk.Tk):
         status_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
         self._bind_mousewheel_events()
         self.refresh_timeline()
+
+    def _build_app_menu(self) -> None:
+        self.menu_bar = tk.Menu(self)
+        self.help_menu = tk.Menu(self.menu_bar, tearoff=False)
+        self.help_menu.add_command(label="关于", command=self.open_about_window)
+        self.menu_bar.add_cascade(label="帮助", menu=self.help_menu)
+        self.configure(menu=self.menu_bar)
+
+    def open_about_window(self) -> None:
+        if self.about_window is not None and self.about_window.winfo_exists():
+            self.about_window.deiconify()
+            self.about_window.lift()
+            self.about_window.focus_force()
+            return
+
+        about_info = get_app_about_info()
+        about_window = tk.Toplevel(self)
+        self.about_window = about_window
+        about_window.title("关于")
+        about_window.transient(self)
+        about_window.resizable(False, False)
+        about_window.protocol("WM_DELETE_WINDOW", self._on_about_window_closed)
+
+        content = ttk.Frame(about_window, padding=(26, 22, 26, 20))
+        content.grid(row=0, column=0, sticky="nsew")
+        content.columnconfigure(0, weight=0)
+        content.columnconfigure(1, weight=1)
+
+        ttk.Label(
+            content,
+            text=about_info.app_name,
+            font=("Segoe UI", 16, "bold"),
+            anchor="center",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
+
+        version_frame = ttk.Frame(content, padding=(10, 8))
+        version_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        version_frame.columnconfigure(1, weight=1)
+        ttk.Label(version_frame, text=f"{about_info.version_label}:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w")
+        ttk.Label(version_frame, text=about_info.version, font=("Consolas", 9), wraplength=460).grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=(8, 0),
+        )
+
+        ttk.Separator(content, orient=tk.HORIZONTAL).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+
+        ttk.Label(content, text=about_info.distribution_prefix).grid(row=3, column=0, sticky="w", pady=3, padx=(0, 12))
+        self._build_about_link_label(content, about_info.license_link.label, about_info.license_link.url).grid(
+            row=3,
+            column=1,
+            sticky="w",
+            pady=3,
+        )
+
+        ttk.Label(content, text="Repository").grid(row=4, column=0, sticky="w", pady=3, padx=(0, 12))
+        self._build_about_link_label(content, about_info.repository_link.label, about_info.repository_link.url).grid(
+            row=4,
+            column=1,
+            sticky="w",
+            pady=3,
+        )
+
+        ttk.Label(content, text=about_info.author_prefix).grid(row=5, column=0, sticky="w", pady=3, padx=(0, 12))
+        author_row = ttk.Frame(content)
+        author_row.grid(row=5, column=1, sticky="w", pady=3)
+        self._build_about_link_label(author_row, about_info.author_link.label, about_info.author_link.url).grid(row=0, column=0, sticky="w")
+        ttk.Label(author_row, text=f" {about_info.affiliation_text} ").grid(row=0, column=1, sticky="w")
+        self._build_about_link_label(author_row, about_info.organization_link.label, about_info.organization_link.url).grid(
+            row=0,
+            column=2,
+            sticky="w",
+        )
+
+        ttk.Label(content, text="Email").grid(row=6, column=0, sticky="w", pady=3, padx=(0, 12))
+        self._build_about_link_label(content, about_info.email_link.label, about_info.email_link.url).grid(
+            row=6,
+            column=1,
+            sticky="w",
+            pady=3,
+        )
+
+        ttk.Button(content, text="关闭", command=self._on_about_window_closed).grid(row=7, column=0, columnspan=2, sticky="e", pady=(18, 0))
+        self._center_child_window(about_window)
+
+    def _build_about_link_label(self, parent: tk.Misc, text: str, url: str) -> ttk.Label:
+        link_label = ttk.Label(parent, text=text, foreground="#1f5fbf", cursor="hand2", font=("Segoe UI", 9, "underline"))
+        link_label.bind("<Button-1>", lambda _event: self.open_external_link(url))
+        return link_label
+
+    def _center_child_window(self, child_window: tk.Toplevel) -> None:
+        child_window.update_idletasks()
+        child_width = child_window.winfo_reqwidth()
+        child_height = child_window.winfo_reqheight()
+        parent_x = self.winfo_rootx()
+        parent_y = self.winfo_rooty()
+        parent_width = max(self.winfo_width(), 1)
+        parent_height = max(self.winfo_height(), 1)
+        window_x = parent_x + max((parent_width - child_width) // 2, 0)
+        window_y = parent_y + max((parent_height - child_height) // 2, 0)
+        child_window.geometry(f"{child_width}x{child_height}+{window_x}+{window_y}")
+
+    def _on_about_window_closed(self) -> None:
+        if self.about_window is None:
+            return
+
+        about_window = self.about_window
+        self.about_window = None
+        if about_window.winfo_exists():
+            about_window.destroy()
+
+    def open_external_link(self, url: str) -> None:
+        try:
+            webbrowser.open(url)
+        except webbrowser.Error as exc:
+            messagebox.showerror("打开链接失败", str(exc))
 
     def _build_file_management_module(self, parent: tk.Misc) -> None:
         self.file_management_module = ttk.Labelframe(parent, text="文件管理", padding=(10, 8, 10, 8))
@@ -780,7 +892,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.preview_placeholder.grid(row=0, column=0, sticky="nsew")
 
     def _build_time_editing_module(self, parent: tk.Misc) -> None:
-        self.time_editing_module = ttk.Labelframe(parent, text="时间轴与可视范围", padding=(10, 8, 10, 8))
+        self.time_editing_module = ttk.Labelframe(parent, text="时间轴", padding=(10, 8, 10, 8))
         self.time_editing_module.grid(row=1, column=0, sticky="nsew")
         self.time_editing_module.columnconfigure(0, weight=1)
         self.time_editing_module.rowconfigure(1, weight=1)
@@ -805,8 +917,6 @@ class HWiNFOPlotterApp(tk.Tk):
             sticky="ew",
             padx=(8, 0),
         )
-        ttk.Label(toolbar, textvariable=self.trim_duration_label_var).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
-
         timeline_host = ttk.Frame(self.time_editing_module)
         timeline_host.grid(row=1, column=0, sticky="nsew")
         timeline_host.columnconfigure(0, weight=1)
@@ -1239,86 +1349,15 @@ class HWiNFOPlotterApp(tk.Tk):
         density_value = self.parse_time_tick_density()
         self.time_density_label_var.set(f"{density_value}")
 
-    def _on_trim_start_changed(self, *_args) -> None:
-        if self._updating_trim_controls:
-            return
-
-        self._updating_trim_controls = True
-        try:
-            start_seconds = self.trim_start_var.get()
-            end_seconds = self.trim_end_var.get()
-            if start_seconds > end_seconds:
-                self.trim_end_var.set(start_seconds)
-            self.update_trim_labels()
-        finally:
-            self._updating_trim_controls = False
-
-        if self.get_render_sessions():
-            self.refresh_timeline()
-            self.schedule_preview_refresh()
-
-    def _on_trim_end_changed(self, *_args) -> None:
-        if self._updating_trim_controls:
-            return
-
-        self._updating_trim_controls = True
-        try:
-            start_seconds = self.trim_start_var.get()
-            end_seconds = self.trim_end_var.get()
-            if end_seconds < start_seconds:
-                self.trim_start_var.set(end_seconds)
-            self.update_trim_labels()
-        finally:
-            self._updating_trim_controls = False
-
-        if self.get_render_sessions():
-            self.refresh_timeline()
-            self.schedule_preview_refresh()
-
-    def update_trim_labels(self) -> None:
-        start_seconds = self.trim_start_var.get()
-        end_seconds = self.trim_end_var.get()
-        self.trim_start_label_var.set(format_elapsed_time(start_seconds))
-        self.trim_end_label_var.set(format_elapsed_time(end_seconds))
-        self.trim_duration_label_var.set(
-            f"可视化范围：{format_elapsed_time(start_seconds)} → {format_elapsed_time(end_seconds)}"
-        )
-
     def configure_trim_controls(self, preserve_range: bool = False) -> None:
-        global_start_seconds, global_end_seconds = self.get_global_time_bounds()
-        previous_range = self.get_visible_range_seconds() if preserve_range else None
-
-        self._updating_trim_controls = True
-        try:
-            if previous_range is None:
-                self.trim_start_var.set(global_start_seconds)
-                self.trim_end_var.set(global_end_seconds)
-            else:
-                start_seconds = max(global_start_seconds, min(previous_range[0], global_end_seconds))
-                end_seconds = max(global_start_seconds, min(previous_range[1], global_end_seconds))
-                if end_seconds < start_seconds:
-                    start_seconds, end_seconds = global_start_seconds, global_end_seconds
-                self.trim_start_var.set(start_seconds)
-                self.trim_end_var.set(end_seconds)
-            self.update_trim_labels()
-        finally:
-            self._updating_trim_controls = False
+        _ = preserve_range
         self.refresh_timeline()
 
     def get_global_time_bounds(self) -> tuple[float, float]:
         return compute_global_time_bounds(self.get_render_sessions())
 
     def get_visible_range_seconds(self) -> tuple[float, float] | None:
-        render_sessions = self.get_render_sessions()
-        if not render_sessions:
-            return None
-
-        global_start_seconds, global_end_seconds = self.get_global_time_bounds()
-        start_seconds = max(global_start_seconds, min(float(self.trim_start_var.get()), global_end_seconds))
-        end_seconds = max(global_start_seconds, min(float(self.trim_end_var.get()), global_end_seconds))
-        if end_seconds < start_seconds:
-            start_seconds, end_seconds = end_seconds, start_seconds
-        return start_seconds, end_seconds
+        return None
 
     def _on_control_host_configure(self, _event=None) -> None:
         scroll_region = self.control_scroll_canvas.bbox("all")
@@ -1390,11 +1429,6 @@ class HWiNFOPlotterApp(tk.Tk):
             start_candidates.extend((full_start_seconds, active_start_seconds))
             end_candidates.extend((full_end_seconds, active_end_seconds))
 
-        visible_range_seconds = self.get_visible_range_seconds()
-        if visible_range_seconds is not None:
-            start_candidates.append(visible_range_seconds[0])
-            end_candidates.append(visible_range_seconds[1])
-
         start_seconds = min(start_candidates)
         end_seconds = max(end_candidates)
         if end_seconds <= start_seconds:
@@ -1417,7 +1451,6 @@ class HWiNFOPlotterApp(tk.Tk):
             canvas.delete("all")
             self.timeline_clip_item_by_session_id.clear()
             self.timeline_hit_regions.clear()
-            self.timeline_work_area_item_ids.clear()
 
             render_sessions = self.get_render_sessions()
             if not render_sessions:
@@ -1451,7 +1484,6 @@ class HWiNFOPlotterApp(tk.Tk):
             canvas.configure(scrollregion=(0, 0, content_width, content_height))
 
             self._draw_timeline_axis(canvas, content_width, metrics)
-            self._draw_timeline_work_area(canvas, content_width, content_height, metrics)
             self._draw_timeline_sessions(canvas, render_sessions, metrics)
 
             selected_count = len(self.get_selected_session_ids())
@@ -1468,9 +1500,7 @@ class HWiNFOPlotterApp(tk.Tk):
             "right_padding": 48.0,
             "top_padding": 16.0,
             "axis_y": 28.0,
-            "work_area_top": 40.0,
-            "work_area_height": 28.0,
-            "tracks_top": 88.0,
+            "tracks_top": 54.0,
             "track_row_height": 42.0,
             "clip_height": 22.0,
             "handle_width": 6.0,
@@ -1518,79 +1548,6 @@ class HWiNFOPlotterApp(tk.Tk):
                     font=("Segoe UI", 9),
                 )
             tick_seconds += tick_step_seconds
-
-    def _draw_timeline_work_area(
-        self,
-        canvas: tk.Canvas,
-        content_width: int,
-        content_height: int,
-        metrics: dict[str, float],
-    ) -> None:
-        visible_range_seconds = self.get_visible_range_seconds()
-        if visible_range_seconds is None:
-            return
-
-        start_seconds, end_seconds = visible_range_seconds
-        top_y = metrics["work_area_top"]
-        bottom_y = top_y + metrics["work_area_height"]
-        left_x = self._timeline_seconds_to_x(start_seconds, metrics)
-        right_x = self._timeline_seconds_to_x(end_seconds, metrics)
-        handle_width = metrics["handle_width"]
-
-        canvas.create_rectangle(
-            metrics["left_gutter"],
-            top_y,
-            content_width - metrics["right_padding"],
-            bottom_y,
-            fill="#edf1f6",
-            outline="",
-        )
-        area_id = canvas.create_rectangle(
-            left_x,
-            top_y,
-            right_x,
-            bottom_y,
-            fill="#dfe9ff",
-            outline="#6f89c5",
-            width=1,
-        )
-        canvas.create_text(
-            left_x + 8,
-            top_y + metrics["work_area_height"] / 2,
-            anchor="w",
-            fill="#314463",
-            text="可视范围",
-            font=("Segoe UI", 9, "bold"),
-        )
-        start_handle_id = canvas.create_rectangle(
-            left_x - handle_width,
-            top_y,
-            left_x + handle_width,
-            bottom_y,
-            fill="#6f89c5",
-            outline="",
-        )
-        end_handle_id = canvas.create_rectangle(
-            right_x - handle_width,
-            top_y,
-            right_x + handle_width,
-            bottom_y,
-            fill="#6f89c5",
-            outline="",
-        )
-        self.timeline_hit_regions[area_id] = ("move_work_area", None)
-        self.timeline_hit_regions[start_handle_id] = ("work_area_start", None)
-        self.timeline_hit_regions[end_handle_id] = ("work_area_end", None)
-        self.timeline_work_area_item_ids.update({area_id, start_handle_id, end_handle_id})
-
-        canvas.create_rectangle(
-            metrics["left_gutter"],
-            bottom_y + 6,
-            content_width - metrics["right_padding"],
-            content_height - metrics["bottom_padding"],
-            fill="",
-            outline="#e4e8ef",
-        )
 
     def _draw_timeline_sessions(
         self,
@@ -1719,37 +1676,32 @@ class HWiNFOPlotterApp(tk.Tk):
             return None
 
         action, session_id = hit
-        visible_range_seconds = self.get_visible_range_seconds()
-        if visible_range_seconds is None:
+        if session_id is None:
+            self.timeline_drag_state = None
             return None
 
-        if session_id is not None:
-            selected_session_ids = set(self.get_selected_session_ids())
-            if session_id not in selected_session_ids:
-                self.session_tree.selection_set((session_id,))
-                self.session_tree.focus(session_id)
-                selected_session_ids = {session_id}
-                self.sync_session_editor()
-                self.refresh_timeline()
+        selected_session_ids = set(self.get_selected_session_ids())
+        if session_id not in selected_session_ids:
+            self.session_tree.selection_set((session_id,))
+            self.session_tree.focus(session_id)
+            selected_session_ids = {session_id}
+            self.sync_session_editor()
+            self.refresh_timeline()
 
-            if action == "move_clip":
-                tracked_session_ids = tuple(selected_session_ids)
-            else:
-                tracked_session_ids = (session_id,)
-            start_offsets = {
-                tracked_session_id: float(self.get_session_by_id(tracked_session_id).offset_seconds)
-                for tracked_session_id in tracked_session_ids
-                if self.get_session_by_id(tracked_session_id) is not None
-            }
-            start_trim_ranges = {
-                tracked_session_id: resolve_session_source_trim_range(self.get_session_by_id(tracked_session_id))
-                for tracked_session_id in tracked_session_ids
-                if self.get_session_by_id(tracked_session_id) is not None
-            }
+        if action == "move_clip":
+            tracked_session_ids = tuple(selected_session_ids)
         else:
-            tracked_session_ids = ()
-            start_offsets = {}
-            start_trim_ranges = {}
+            tracked_session_ids = (session_id,)
+        start_offsets = {
+            tracked_session_id: float(self.get_session_by_id(tracked_session_id).offset_seconds)
+            for tracked_session_id in tracked_session_ids
+            if self.get_session_by_id(tracked_session_id) is not None
+        }
+        start_trim_ranges = {
+            tracked_session_id: resolve_session_source_trim_range(self.get_session_by_id(tracked_session_id))
+            for tracked_session_id in tracked_session_ids
+            if self.get_session_by_id(tracked_session_id) is not None
+        }
 
         self.timeline_drag_state = {
             "action": action,
@@ -1757,7 +1709,6 @@ class HWiNFOPlotterApp(tk.Tk):
             "session_ids": tracked_session_ids,
             "start_offsets": start_offsets,
             "start_trim_ranges": start_trim_ranges,
-            "start_work_area": visible_range_seconds,
         }
         return "break"
 
@@ -1823,33 +1774,6 @@ class HWiNFOPlotterApp(tk.Tk):
             self._schedule_timeline_preview_refresh()
             return "break"
 
-        if action in {"work_area_start", "work_area_end", "move_work_area"}:
-            start_seconds, end_seconds = self.timeline_drag_state["start_work_area"]
-            current_span_seconds = end_seconds - start_seconds
-            global_start_seconds, global_end_seconds = self.get_global_time_bounds()
-            if action == "work_area_start":
-                updated_start_seconds = self._snap_timeline_value_seconds(
-                    min(end_seconds, max(global_start_seconds, start_seconds + delta_seconds)),
-                    event,
-                )
-                updated_end_seconds = end_seconds
-            elif action == "work_area_end":
-                updated_start_seconds = start_seconds
-                updated_end_seconds = self._snap_timeline_value_seconds(
-                    max(start_seconds, min(global_end_seconds, end_seconds + delta_seconds)),
-                    event,
-                )
-            else:
-                updated_start_seconds = max(
-                    global_start_seconds,
-                    min(global_end_seconds - current_span_seconds, start_seconds + delta_seconds),
-                )
-                updated_end_seconds = updated_start_seconds + current_span_seconds
-
-            self._apply_timeline_work_area_update(updated_start_seconds, updated_end_seconds)
-            self._schedule_timeline_preview_refresh()
-            return "break"
-
         return "break"
 
     def _on_timeline_button_release(self, _event=None) -> str | None:
@@ -1882,16 +1806,6 @@ class HWiNFOPlotterApp(tk.Tk):
         ]
         self.refresh_session_tree(preferred_selection=preferred_selection)
         self.configure_trim_controls(preserve_range=True)
-
-    def _apply_timeline_work_area_update(self, start_seconds: float, end_seconds: float) -> None:
-        self._updating_trim_controls = True
-        try:
-            self.trim_start_var.set(float(start_seconds))
-            self.trim_end_var.set(float(end_seconds))
-            self.update_trim_labels()
-        finally:
-            self._updating_trim_controls = False
-        self.refresh_timeline()
 
     def _schedule_timeline_preview_refresh(self, *, immediate: bool = False) -> None:
         if self.timeline_preview_after_id is not None:
@@ -1944,15 +1858,6 @@ class HWiNFOPlotterApp(tk.Tk):
         self._apply_timeline_session_updates(updated_session_by_id)
         self.schedule_preview_refresh(immediate=True)
         self.status_var.set("已重置所选文件的有效片段。")
-
-    def reset_work_area(self) -> None:
-        if not self.get_render_sessions():
-            return
-
-        global_start_seconds, global_end_seconds = self.get_global_time_bounds()
-        self._apply_timeline_work_area_update(global_start_seconds, global_end_seconds)
-        self.schedule_preview_refresh(immediate=True)
-        self.status_var.set("已重置全局工作区。")
 
     def browse_csv(self) -> None:
         file_paths = filedialog.askopenfilenames(
@@ -2593,6 +2498,7 @@ class HWiNFOPlotterApp(tk.Tk):
                 self.process_results_after_id = self.after(80, self.process_preview_results)
 
     def on_close(self) -> None:
+        self._on_about_window_closed()
         if self.file_drop_after_id is not None:
             try:
                 self.after_cancel(self.file_drop_after_id)
