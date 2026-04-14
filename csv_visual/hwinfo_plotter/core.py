@@ -3,18 +3,25 @@ from __future__ import annotations
 import codecs
 import csv
 import io
+import math
 import re
 import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
+from statistics import median
 from typing import Mapping, Sequence
 
 from matplotlib import font_manager, rcParams
 from matplotlib.colors import is_color_like
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, MultipleLocator
+
+try:
+    from scipy.signal import find_peaks as scipy_find_peaks
+except ImportError:
+    scipy_find_peaks = None
 
 ENCODING_CANDIDATES = (
     "utf-8-sig",
@@ -58,6 +65,8 @@ BOM_ENCODINGS = (
 MIN_TIME_TICK_DENSITY = 1
 MAX_TIME_TICK_DENSITY = 12
 DEFAULT_TIME_TICK_DENSITY = 7
+EXTREMA_KINDS = ("peak", "valley")
+EXTREMA_MODES = (*EXTREMA_KINDS, "both")
 
 _FONT_READY = False
 
@@ -110,6 +119,50 @@ class VisibleSeries:
     descriptor: SeriesDescriptor
     x_values: tuple[float, ...]
     y_values: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class ExtremaDetectionConfig:
+    enabled: bool = False
+    source_series_keys: tuple[SeriesKey, ...] = ()
+    mode: str = "both"
+    min_distance_seconds: float = 1.0
+    min_prominence: float = 0.0
+    smoothing_window: int = 1
+    alignment_tolerance_seconds: float = 1.0
+    use_secondary_axis: bool = True
+
+
+@dataclass(frozen=True)
+class DetectedExtremum:
+    event_id: str
+    key: SeriesKey
+    kind: str
+    source_seconds: float
+    aligned_seconds: float
+    source_value: float
+    prominence: float
+    sample_index: int
+
+
+@dataclass(frozen=True)
+class AlignedExtremaGroup:
+    group_id: str
+    kind: str
+    anchor_seconds: float
+    members: tuple[DetectedExtremum, ...]
+
+
+@dataclass(frozen=True)
+class ExtremaPointKey:
+    group_id: str
+    key: SeriesKey
+
+
+@dataclass(frozen=True)
+class ExtremaAssignment:
+    point_key: ExtremaPointKey
+    assigned_value: float | None = None
 
 
 @dataclass
@@ -394,6 +447,284 @@ def filter_visible_series(
     return visible_series
 
 
+def detect_series_extrema(
+    key: SeriesKey,
+    source_seconds: Sequence[float],
+    source_values: Sequence[float],
+    *,
+    sample_indices: Sequence[int] | None = None,
+    offset_seconds: float = 0.0,
+    mode: str = "both",
+    min_distance_seconds: float = 1.0,
+    min_prominence: float = 0.0,
+    smoothing_window: int = 1,
+) -> tuple[DetectedExtremum, ...]:
+    resolved_mode = normalize_extrema_mode(mode)
+    if len(source_seconds) != len(source_values):
+        raise ValueError("时间序列长度与数值序列长度不一致。")
+    if sample_indices is not None and len(sample_indices) != len(source_values):
+        raise ValueError("采样索引数量与数值序列长度不一致。")
+    if min_distance_seconds < 0:
+        raise ValueError("极值最小间距不能为负数。")
+    if min_prominence < 0:
+        raise ValueError("极值最小突出度不能为负数。")
+    if smoothing_window < 1:
+        raise ValueError("平滑窗口必须大于等于 1。")
+    if len(source_values) < 3:
+        return ()
+    if scipy_find_peaks is None:
+        raise RuntimeError(
+            "未安装 scipy，无法进行峰谷检测。请先在 csv_visual/ 下运行 "
+            "`pip install -r requirements.txt`。"
+        )
+
+    resolved_sample_indices = (
+        tuple(int(index) for index in sample_indices)
+        if sample_indices is not None
+        else tuple(range(len(source_values)))
+    )
+    smoothed_values = smooth_series_values(source_values, smoothing_window)
+    peak_kwargs: dict[str, object] = {
+        "prominence": float(min_prominence),
+    }
+    distance_samples = resolve_distance_samples(source_seconds, min_distance_seconds)
+    if distance_samples is not None:
+        peak_kwargs["distance"] = distance_samples
+
+    detected_extrema: list[DetectedExtremum] = []
+    if resolved_mode in {"peak", "both"}:
+        peak_indices, peak_properties = scipy_find_peaks(smoothed_values, **peak_kwargs)
+        detected_extrema.extend(
+            build_detected_extrema(
+                key,
+                kind="peak",
+                source_seconds=source_seconds,
+                source_values=source_values,
+                sample_indices=resolved_sample_indices,
+                offset_seconds=offset_seconds,
+                peak_indices=peak_indices,
+                peak_properties=peak_properties,
+            )
+        )
+    if resolved_mode in {"valley", "both"}:
+        valley_indices, valley_properties = scipy_find_peaks(
+            [-float(value) for value in smoothed_values],
+            **peak_kwargs,
+        )
+        detected_extrema.extend(
+            build_detected_extrema(
+                key,
+                kind="valley",
+                source_seconds=source_seconds,
+                source_values=source_values,
+                sample_indices=resolved_sample_indices,
+                offset_seconds=offset_seconds,
+                peak_indices=valley_indices,
+                peak_properties=valley_properties,
+            )
+        )
+
+    return tuple(
+        sorted(
+            detected_extrema,
+            key=lambda item: (
+                float(item.source_seconds),
+                0 if item.kind == "peak" else 1,
+                item.sample_index,
+            ),
+        )
+    )
+
+
+def detect_extrema_for_sessions(
+    sessions: Sequence[LoadedCsvSession],
+    config: ExtremaDetectionConfig,
+) -> tuple[DetectedExtremum, ...]:
+    if not config.enabled or not config.source_series_keys:
+        return ()
+
+    visible_sessions = {
+        session.session_id: session
+        for session in sessions
+        if session.is_visible
+    }
+    detected_extrema: list[DetectedExtremum] = []
+    seen_series_keys: set[SeriesKey] = set()
+    for series_key in config.source_series_keys:
+        if series_key in seen_series_keys:
+            continue
+        seen_series_keys.add(series_key)
+
+        session = visible_sessions.get(series_key.session_id)
+        if session is None:
+            continue
+        x_values, y_values = session.data.extract_series(series_key.column_index)
+        if len(y_values) < 3:
+            continue
+
+        trim_start_seconds, trim_end_seconds = resolve_session_source_trim_range(session)
+        trimmed_sample_indices, trimmed_x_values, trimmed_y_values = trim_series_with_sample_indices(
+            x_values,
+            y_values,
+            trim_start_seconds,
+            trim_end_seconds,
+        )
+        if len(trimmed_y_values) < 3:
+            continue
+
+        detected_extrema.extend(
+            detect_series_extrema(
+                series_key,
+                trimmed_x_values,
+                trimmed_y_values,
+                sample_indices=trimmed_sample_indices,
+                offset_seconds=session.offset_seconds,
+                mode=config.mode,
+                min_distance_seconds=config.min_distance_seconds,
+                min_prominence=config.min_prominence,
+                smoothing_window=config.smoothing_window,
+            )
+        )
+
+    return tuple(
+        sorted(
+            detected_extrema,
+            key=lambda item: (
+                float(item.aligned_seconds),
+                0 if item.kind == "peak" else 1,
+                item.key.session_id,
+                item.key.column_index,
+                item.sample_index,
+            ),
+        )
+    )
+
+
+def group_aligned_extrema(
+    detected_extrema: Sequence[DetectedExtremum],
+    *,
+    alignment_tolerance_seconds: float = 1.0,
+    reference_session_id: str | None = None,
+) -> tuple[AlignedExtremaGroup, ...]:
+    if alignment_tolerance_seconds < 0:
+        raise ValueError("分组容差不能为负数。")
+
+    grouped_extrema: list[AlignedExtremaGroup] = []
+    for kind in EXTREMA_KINDS:
+        kind_extrema = sorted(
+            (extremum for extremum in detected_extrema if extremum.kind == kind),
+            key=lambda item: (
+                float(item.aligned_seconds),
+                item.key.session_id,
+                item.key.column_index,
+                item.sample_index,
+            ),
+        )
+        if not kind_extrema:
+            continue
+
+        current_members: list[DetectedExtremum] = []
+        for extremum in kind_extrema:
+            if not current_members:
+                current_members = [extremum]
+                continue
+
+            anchor_seconds = resolve_extrema_group_anchor(
+                current_members,
+                reference_session_id=reference_session_id,
+            )
+            if abs(float(extremum.aligned_seconds) - anchor_seconds) <= float(alignment_tolerance_seconds):
+                current_members.append(extremum)
+                continue
+
+            grouped_extrema.append(
+                finalize_extrema_group(
+                    kind,
+                    current_members,
+                    reference_session_id=reference_session_id,
+                )
+            )
+            current_members = [extremum]
+
+        if current_members:
+            grouped_extrema.append(
+                finalize_extrema_group(
+                    kind,
+                    current_members,
+                    reference_session_id=reference_session_id,
+                )
+            )
+
+    ordered_groups = sorted(
+        grouped_extrema,
+        key=lambda group: (
+            float(group.anchor_seconds),
+            0 if group.kind == "peak" else 1,
+            tuple(
+                (
+                    member.key.session_id,
+                    member.key.column_index,
+                    member.sample_index,
+                )
+                for member in group.members
+            ),
+        ),
+    )
+    return tuple(
+        replace(group, group_id=f"{group.kind}-{index:03d}")
+        for index, group in enumerate(ordered_groups, start=1)
+    )
+
+
+def build_assigned_curve_points(
+    groups: Sequence[AlignedExtremaGroup],
+    assignments: Mapping[ExtremaPointKey, float | None] | Sequence[ExtremaAssignment],
+) -> dict[SeriesKey, tuple[tuple[float, ...], tuple[float, ...]]]:
+    assignment_map = normalize_extrema_assignments(assignments)
+    ordered_groups = sorted(
+        groups,
+        key=lambda group: (
+            float(group.anchor_seconds),
+            0 if group.kind == "peak" else 1,
+            group.group_id,
+        ),
+    )
+
+    curve_points_by_series: dict[SeriesKey, list[tuple[float, float]]] = defaultdict(list)
+    for group in ordered_groups:
+        for member in sorted(
+            group.members,
+            key=lambda item: (
+                item.key.session_id,
+                item.key.column_index,
+                item.sample_index,
+            ),
+        ):
+            point_key = ExtremaPointKey(group_id=group.group_id, key=member.key)
+            assigned_value = assignment_map.get(point_key)
+            curve_points = curve_points_by_series[member.key]
+            if assigned_value is None:
+                if curve_points and not math.isnan(curve_points[-1][1]):
+                    curve_points.append((float(group.anchor_seconds), math.nan))
+                continue
+
+            curve_points.append((float(group.anchor_seconds), float(assigned_value)))
+
+    result: dict[SeriesKey, tuple[tuple[float, ...], tuple[float, ...]]] = {}
+    for series_key, curve_points in curve_points_by_series.items():
+        if curve_points and math.isnan(curve_points[-1][1]):
+            curve_points = curve_points[:-1]
+        if not curve_points:
+            continue
+
+        result[series_key] = (
+            tuple(float(x_value) for x_value, _ in curve_points),
+            tuple(float(y_value) for _, y_value in curve_points),
+        )
+
+    return result
+
+
 def build_comparison_figure(
     sessions: Sequence[LoadedCsvSession],
     selected_series: Sequence[SeriesKey],
@@ -562,6 +893,209 @@ def build_comparison_output_name(
     metric_part = "_".join(metric_parts) if metric_parts else "chart"
 
     return f"compare__{file_part}__{metric_part}.png"
+
+
+def normalize_extrema_mode(mode: str) -> str:
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in EXTREMA_MODES:
+        raise ValueError(f"不支持的峰谷检测模式：{mode}")
+    return normalized_mode
+
+
+def smooth_series_values(values: Sequence[float], smoothing_window: int) -> list[float]:
+    resolved_window = int(smoothing_window)
+    if resolved_window <= 1 or len(values) <= 2:
+        return [float(value) for value in values]
+
+    radius_before = (resolved_window - 1) // 2
+    radius_after = resolved_window // 2
+    smoothed_values: list[float] = []
+    for index in range(len(values)):
+        start_index = max(0, index - radius_before)
+        end_index = min(len(values), index + radius_after + 1)
+        window_values = [float(value) for value in values[start_index:end_index]]
+        smoothed_values.append(sum(window_values) / len(window_values))
+
+    return smoothed_values
+
+
+def resolve_distance_samples(
+    source_seconds: Sequence[float],
+    min_distance_seconds: float,
+) -> int | None:
+    if min_distance_seconds <= 0 or len(source_seconds) < 2:
+        return None
+
+    positive_deltas = [
+        float(current_seconds) - float(previous_seconds)
+        for previous_seconds, current_seconds in zip(source_seconds, source_seconds[1:])
+        if float(current_seconds) > float(previous_seconds)
+    ]
+    if not positive_deltas:
+        return None
+
+    typical_delta = median(positive_deltas)
+    if typical_delta <= 0:
+        return None
+    return max(1, int(round(float(min_distance_seconds) / float(typical_delta))))
+
+
+def build_detected_extrema(
+    key: SeriesKey,
+    *,
+    kind: str,
+    source_seconds: Sequence[float],
+    source_values: Sequence[float],
+    sample_indices: Sequence[int],
+    offset_seconds: float,
+    peak_indices: Sequence[int],
+    peak_properties: Mapping[str, Sequence[float]],
+) -> list[DetectedExtremum]:
+    prominences = peak_properties.get("prominences", ())
+    detected_extrema: list[DetectedExtremum] = []
+    for position, peak_index in enumerate(peak_indices):
+        source_index = int(peak_index)
+        source_second = float(source_seconds[source_index])
+        sample_index = int(sample_indices[source_index])
+        prominence = float(prominences[position]) if position < len(prominences) else 0.0
+        detected_extrema.append(
+            DetectedExtremum(
+                event_id=f"{key.session_id}:{key.column_index}:{kind}:{sample_index}",
+                key=key,
+                kind=kind,
+                source_seconds=source_second,
+                aligned_seconds=source_second + float(offset_seconds),
+                source_value=float(source_values[source_index]),
+                prominence=prominence,
+                sample_index=sample_index,
+            )
+        )
+
+    return detected_extrema
+
+
+def trim_series_with_sample_indices(
+    x_values: Sequence[float],
+    y_values: Sequence[float],
+    start_seconds: float,
+    end_seconds: float,
+) -> tuple[list[int], list[float], list[float]]:
+    filtered_points = [
+        (index, float(x_value), float(y_value))
+        for index, (x_value, y_value) in enumerate(zip(x_values, y_values))
+        if start_seconds <= float(x_value) <= end_seconds
+    ]
+    if not filtered_points:
+        return [], [], []
+
+    filtered_indices, filtered_x_values, filtered_y_values = zip(*filtered_points)
+    return list(filtered_indices), list(filtered_x_values), list(filtered_y_values)
+
+
+def resolve_extrema_group_anchor(
+    members: Sequence[DetectedExtremum],
+    *,
+    reference_session_id: str | None = None,
+) -> float:
+    if not members:
+        raise ValueError("分组成员不能为空。")
+
+    if reference_session_id:
+        reference_aligned_seconds = [
+            float(member.aligned_seconds)
+            for member in members
+            if member.key.session_id == reference_session_id
+        ]
+        if reference_aligned_seconds:
+            return float(median(reference_aligned_seconds))
+
+    return float(median(float(member.aligned_seconds) for member in members))
+
+
+def finalize_extrema_group(
+    kind: str,
+    members: Sequence[DetectedExtremum],
+    *,
+    reference_session_id: str | None = None,
+) -> AlignedExtremaGroup:
+    resolved_members = tuple(members)
+    for _ in range(2):
+        anchor_seconds = resolve_extrema_group_anchor(
+            resolved_members,
+            reference_session_id=reference_session_id,
+        )
+        resolved_members = dedupe_group_members_by_series_key(resolved_members, anchor_seconds)
+
+    anchor_seconds = resolve_extrema_group_anchor(
+        resolved_members,
+        reference_session_id=reference_session_id,
+    )
+    return AlignedExtremaGroup(
+        group_id="",
+        kind=kind,
+        anchor_seconds=anchor_seconds,
+        members=tuple(
+            sorted(
+                resolved_members,
+                key=lambda member: (
+                    member.key.session_id,
+                    member.key.column_index,
+                    member.sample_index,
+                ),
+            )
+        ),
+    )
+
+
+def dedupe_group_members_by_series_key(
+    members: Sequence[DetectedExtremum],
+    anchor_seconds: float,
+) -> tuple[DetectedExtremum, ...]:
+    selected_members: dict[SeriesKey, DetectedExtremum] = {}
+    for member in members:
+        current_member = selected_members.get(member.key)
+        if current_member is None or is_better_group_member(
+            member,
+            current_member,
+            anchor_seconds=anchor_seconds,
+        ):
+            selected_members[member.key] = member
+
+    return tuple(selected_members.values())
+
+
+def is_better_group_member(
+    candidate: DetectedExtremum,
+    current_member: DetectedExtremum,
+    *,
+    anchor_seconds: float,
+) -> bool:
+    candidate_distance = abs(float(candidate.aligned_seconds) - float(anchor_seconds))
+    current_distance = abs(float(current_member.aligned_seconds) - float(anchor_seconds))
+    if candidate_distance != current_distance:
+        return candidate_distance < current_distance
+    if float(candidate.prominence) != float(current_member.prominence):
+        return float(candidate.prominence) > float(current_member.prominence)
+    if float(candidate.aligned_seconds) != float(current_member.aligned_seconds):
+        return float(candidate.aligned_seconds) < float(current_member.aligned_seconds)
+    return int(candidate.sample_index) < int(current_member.sample_index)
+
+
+def normalize_extrema_assignments(
+    assignments: Mapping[ExtremaPointKey, float | None] | Sequence[ExtremaAssignment],
+) -> dict[ExtremaPointKey, float | None]:
+    if hasattr(assignments, "items"):
+        return {
+            point_key: None if assigned_value is None else float(assigned_value)
+            for point_key, assigned_value in assignments.items()
+        }
+
+    return {
+        assignment.point_key: (
+            None if assignment.assigned_value is None else float(assignment.assigned_value)
+        )
+        for assignment in assignments
+    }
 
 
 def load_hwinfo_csv(path: Path | str, preload_numeric: bool = False) -> HWiNFOData:
