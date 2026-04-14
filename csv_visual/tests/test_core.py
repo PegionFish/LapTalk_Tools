@@ -430,6 +430,157 @@ class ExtremaCoreTests(unittest.TestCase):
         self.assertEqual(y_values[2], 30.0)
         self.assertNotIn(0.0, [value for value in y_values if not math.isnan(value)])
 
+    def test_build_comparison_figure_renders_extrema_markers(self) -> None:
+        session = build_extrema_session(
+            "run_a",
+            "RunA",
+            [0.0, 4.0, 0.0, 5.0, 0.0],
+            is_reference=True,
+        )
+        config = ExtremaDetectionConfig(
+            enabled=True,
+            source_series_keys=(SeriesKey("run_a", 2),),
+            mode="peak",
+            min_distance_seconds=1.0,
+            min_prominence=1.0,
+        )
+
+        figure = build_comparison_figure(
+            (session,),
+            [SeriesKey("run_a", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            extrema_config=config,
+        )
+        axis = figure.axes[0]
+        marker_offsets = [
+            tuple(collection.get_offsets()[0])
+            for collection in axis.collections
+        ]
+
+        self.assertEqual(marker_offsets, [(1.0, 4.0), (3.0, 5.0)])
+
+    def test_build_comparison_figure_draws_assigned_curve_on_secondary_axis(self) -> None:
+        session = build_extrema_session(
+            "run_a",
+            "RunA",
+            [0.0, 4.0, 0.0, 5.0, 0.0],
+            is_reference=True,
+        )
+        config = ExtremaDetectionConfig(
+            enabled=True,
+            source_series_keys=(SeriesKey("run_a", 2),),
+            mode="peak",
+            min_distance_seconds=1.0,
+            min_prominence=1.0,
+            use_secondary_axis=True,
+        )
+        groups = group_aligned_extrema(
+            detect_extrema_for_sessions((session,), config),
+            alignment_tolerance_seconds=config.alignment_tolerance_seconds,
+            reference_session_id="run_a",
+        )
+
+        figure = build_comparison_figure(
+            (session,),
+            [SeriesKey("run_a", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            extrema_config=config,
+            extrema_assignments={
+                ExtremaPointKey(groups[0].group_id, SeriesKey("run_a", 2)): 10.0,
+                ExtremaPointKey(groups[1].group_id, SeriesKey("run_a", 2)): 20.0,
+            },
+        )
+
+        self.assertEqual(len(figure.axes), 2)
+        primary_axis, secondary_axis = figure.axes
+        self.assertEqual(len(primary_axis.lines), 1)
+        self.assertEqual(secondary_axis.get_ylabel(), "赋值曲线")
+        self.assertEqual(len(secondary_axis.lines), 1)
+        self.assertEqual(list(secondary_axis.lines[0].get_xdata()), [1.0, 3.0])
+        self.assertEqual(list(secondary_axis.lines[0].get_ydata()), [10.0, 20.0])
+
+    def test_build_comparison_figure_supports_independent_assigned_curves_per_file(self) -> None:
+        sessions = (
+            build_extrema_session("run_a", "RunA", [0.0, 4.0, 0.0, 5.0, 0.0], is_reference=True),
+            build_extrema_session("run_b", "RunB", [0.0, 4.0, 0.0, 5.0, 0.0]),
+        )
+        config = ExtremaDetectionConfig(
+            enabled=True,
+            source_series_keys=(SeriesKey("run_a", 2), SeriesKey("run_b", 2)),
+            mode="peak",
+            min_distance_seconds=1.0,
+            min_prominence=1.0,
+        )
+        groups = group_aligned_extrema(
+            detect_extrema_for_sessions(sessions, config),
+            alignment_tolerance_seconds=config.alignment_tolerance_seconds,
+            reference_session_id="run_a",
+        )
+
+        assignments = {
+            ExtremaPointKey(groups[0].group_id, SeriesKey("run_a", 2)): 10.0,
+            ExtremaPointKey(groups[0].group_id, SeriesKey("run_b", 2)): 20.0,
+            ExtremaPointKey(groups[1].group_id, SeriesKey("run_a", 2)): 30.0,
+            ExtremaPointKey(groups[1].group_id, SeriesKey("run_b", 2)): 40.0,
+        }
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            extrema_config=config,
+            extrema_assignments=assignments,
+        )
+        secondary_axis = figure.axes[1]
+        line_by_label = {
+            line.get_label(): list(line.get_ydata())
+            for line in secondary_axis.lines
+        }
+
+        self.assertEqual(line_by_label["RunA · 赋值曲线"], [10.0, 30.0])
+        self.assertEqual(line_by_label["RunB · 赋值曲线"], [20.0, 40.0])
+
+    def test_build_comparison_figure_point_color_override_beats_series_color(self) -> None:
+        session = build_extrema_session(
+            "run_a",
+            "RunA",
+            [0.0, 4.0, 0.0],
+            is_reference=True,
+        )
+        config = ExtremaDetectionConfig(
+            enabled=True,
+            source_series_keys=(SeriesKey("run_a", 2),),
+            mode="peak",
+            min_distance_seconds=1.0,
+            min_prominence=1.0,
+        )
+        groups = group_aligned_extrema(
+            detect_extrema_for_sessions((session,), config),
+            alignment_tolerance_seconds=config.alignment_tolerance_seconds,
+            reference_session_id="run_a",
+        )
+        point_key = ExtremaPointKey(groups[0].group_id, SeriesKey("run_a", 2))
+
+        figure = build_comparison_figure(
+            (session,),
+            [SeriesKey("run_a", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            color_by_series={SeriesKey("run_a", 2): "#ff0000"},
+            extrema_config=config,
+            extrema_point_colors={point_key: "#00ff00"},
+        )
+        axis = figure.axes[0]
+
+        self.assertEqual(axis.lines[0].get_color(), "#ff0000")
+        self.assertEqual(tuple(axis.collections[0].get_facecolors()[0]), to_rgba("#00ff00"))
+
 
 class CoreSmokeTests(unittest.TestCase):
     @classmethod

@@ -735,6 +735,9 @@ def build_comparison_figure(
     style: ChartStyle | None = None,
     color_by_series: Mapping[SeriesKey, str] | None = None,
     visible_range_seconds: tuple[float, float] | None = None,
+    extrema_config: ExtremaDetectionConfig | None = None,
+    extrema_assignments: Mapping[ExtremaPointKey, float | None] | Sequence[ExtremaAssignment] | None = None,
+    extrema_point_colors: Mapping[ExtremaPointKey, str] | None = None,
 ) -> Figure:
     visible_sessions = tuple(session for session in sessions if session.is_visible)
     if not visible_sessions:
@@ -788,6 +791,7 @@ def build_comparison_figure(
 
     include_session_alias = len(visible_sessions) > 1
     plotted_line_count = 0
+    line_color_by_series: dict[SeriesKey, str] = {}
     for series in visible_series:
         line_kwargs: dict[str, object] = {}
         if color_by_series is not None:
@@ -795,7 +799,7 @@ def build_comparison_figure(
             if selected_color:
                 line_kwargs["color"] = selected_color
 
-        axis.plot(
+        plotted_line = axis.plot(
             list(series.x_values),
             list(series.y_values),
             linewidth=chart_style.line_width,
@@ -805,8 +809,61 @@ def build_comparison_figure(
                 else series.descriptor.column_display_name
             ),
             **line_kwargs,
-        )
+        )[0]
+        line_color_by_series[series.descriptor.key] = str(plotted_line.get_color())
         plotted_line_count += 1
+
+    grouped_extrema: tuple[AlignedExtremaGroup, ...] = ()
+    assignment_map: dict[ExtremaPointKey, float | None] = normalize_extrema_assignments(
+        {} if extrema_assignments is None else extrema_assignments
+    )
+    fallback_order_by_series: dict[SeriesKey, int] = {
+        series.descriptor.key: index
+        for index, series in enumerate(visible_series)
+    }
+    secondary_axis = None
+    rendered_curve_count = 0
+
+    if extrema_config is not None and extrema_config.enabled and extrema_config.source_series_keys:
+        detected_extrema = detect_extrema_for_sessions(visible_sessions, extrema_config)
+        grouped_extrema = group_aligned_extrema(
+            detected_extrema,
+            alignment_tolerance_seconds=extrema_config.alignment_tolerance_seconds,
+            reference_session_id=get_reference_session_id(visible_sessions),
+        )
+        fallback_order_by_series = build_fallback_series_order(visible_series, grouped_extrema)
+        render_extrema_markers(
+            axis,
+            grouped_extrema,
+            visible_range_seconds=(visible_start_seconds, visible_end_seconds),
+            line_color_by_series=line_color_by_series,
+            color_by_series=color_by_series,
+            point_colors=extrema_point_colors,
+            fallback_order_by_series=fallback_order_by_series,
+        )
+
+        target_axis = axis
+        if extrema_config.use_secondary_axis:
+            target_axis = axis.twinx()
+            secondary_axis = target_axis
+
+        rendered_curve_count = render_assigned_curves(
+            target_axis,
+            visible_sessions,
+            grouped_extrema,
+            assignments=assignment_map,
+            visible_range_seconds=(visible_start_seconds, visible_end_seconds),
+            line_color_by_series=line_color_by_series,
+            color_by_series=color_by_series,
+            point_colors=extrema_point_colors,
+            fallback_order_by_series=fallback_order_by_series,
+            line_width=chart_style.line_width,
+        )
+        if secondary_axis is not None and rendered_curve_count > 0:
+            configure_secondary_value_axis(secondary_axis, chart_style)
+        elif secondary_axis is not None and rendered_curve_count == 0:
+            figure.delaxes(secondary_axis)
+            secondary_axis = None
 
     if chart_style.curve_only_mode:
         axis.grid(False)
@@ -830,7 +887,18 @@ def build_comparison_figure(
             title_kwargs["fontfamily"] = font_family
         axis.set_title(chart_style.title, **title_kwargs)
 
-    if chart_style.show_legend and plotted_line_count > 1 and not chart_style.curve_only_mode:
+    if chart_style.show_legend and not chart_style.curve_only_mode:
+        legend_handles, legend_labels = axis.get_legend_handles_labels()
+        if secondary_axis is not None:
+            extra_handles, extra_labels = secondary_axis.get_legend_handles_labels()
+            legend_handles.extend(extra_handles)
+            legend_labels.extend(extra_labels)
+
+    else:
+        legend_handles = []
+        legend_labels = []
+
+    if chart_style.show_legend and len(legend_handles) > 1 and not chart_style.curve_only_mode:
         legend_kwargs: dict[str, object] = {
             "frameon": False,
             "loc": chart_style.legend_location,
@@ -842,7 +910,7 @@ def build_comparison_figure(
             }
         else:
             legend_kwargs["fontsize"] = 9
-        legend = axis.legend(**legend_kwargs)
+        legend = axis.legend(legend_handles, legend_labels, **legend_kwargs)
         if chart_style.legend_text_color:
             for legend_text in legend.get_texts():
                 legend_text.set_color(chart_style.legend_text_color)
@@ -1096,6 +1164,231 @@ def normalize_extrema_assignments(
         )
         for assignment in assignments
     }
+
+
+def get_reference_session_id(sessions: Sequence[LoadedCsvSession]) -> str | None:
+    reference_session = next((session for session in sessions if session.is_reference), None)
+    return None if reference_session is None else reference_session.session_id
+
+
+def build_fallback_series_order(
+    visible_series: Sequence[VisibleSeries],
+    groups: Sequence[AlignedExtremaGroup],
+) -> dict[SeriesKey, int]:
+    ordered_series_keys = [
+        series.descriptor.key
+        for series in visible_series
+    ]
+    ordered_series_keys.extend(
+        member.key
+        for group in groups
+        for member in group.members
+    )
+
+    fallback_order: dict[SeriesKey, int] = {}
+    for series_key in ordered_series_keys:
+        if series_key not in fallback_order:
+            fallback_order[series_key] = len(fallback_order)
+    return fallback_order
+
+
+def resolve_series_render_color(
+    series_key: SeriesKey,
+    *,
+    line_color_by_series: Mapping[SeriesKey, str],
+    color_by_series: Mapping[SeriesKey, str] | None,
+    fallback_order_by_series: Mapping[SeriesKey, int],
+) -> str:
+    selected_color = line_color_by_series.get(series_key)
+    if selected_color:
+        return selected_color
+    if color_by_series is not None:
+        selected_color = color_by_series.get(series_key)
+        if selected_color:
+            return selected_color
+
+    default_palette = rcParams["axes.prop_cycle"].by_key().get("color", ["#1f77b4"])
+    palette_index = fallback_order_by_series.get(series_key, 0)
+    return str(default_palette[palette_index % len(default_palette)])
+
+
+def resolve_extrema_point_color(
+    point_key: ExtremaPointKey,
+    *,
+    line_color_by_series: Mapping[SeriesKey, str],
+    color_by_series: Mapping[SeriesKey, str] | None,
+    point_colors: Mapping[ExtremaPointKey, str] | None,
+    fallback_order_by_series: Mapping[SeriesKey, int],
+) -> str:
+    if point_colors is not None:
+        selected_color = point_colors.get(point_key)
+        if selected_color:
+            return selected_color
+
+    return resolve_series_render_color(
+        point_key.key,
+        line_color_by_series=line_color_by_series,
+        color_by_series=color_by_series,
+        fallback_order_by_series=fallback_order_by_series,
+    )
+
+
+def render_extrema_markers(
+    axis,
+    groups: Sequence[AlignedExtremaGroup],
+    *,
+    visible_range_seconds: tuple[float, float],
+    line_color_by_series: Mapping[SeriesKey, str],
+    color_by_series: Mapping[SeriesKey, str] | None,
+    point_colors: Mapping[ExtremaPointKey, str] | None,
+    fallback_order_by_series: Mapping[SeriesKey, int],
+) -> int:
+    visible_start_seconds, visible_end_seconds = visible_range_seconds
+    marker_count = 0
+    for group in groups:
+        for member in group.members:
+            if not visible_start_seconds <= float(member.aligned_seconds) <= visible_end_seconds:
+                continue
+
+            point_key = ExtremaPointKey(group.group_id, member.key)
+            axis.scatter(
+                [float(member.aligned_seconds)],
+                [float(member.source_value)],
+                color=resolve_extrema_point_color(
+                    point_key,
+                    line_color_by_series=line_color_by_series,
+                    color_by_series=color_by_series,
+                    point_colors=point_colors,
+                    fallback_order_by_series=fallback_order_by_series,
+                ),
+                s=30,
+                marker="o",
+                zorder=4,
+                label="_nolegend_",
+            )
+            marker_count += 1
+
+    return marker_count
+
+
+def render_assigned_curves(
+    axis,
+    sessions: Sequence[LoadedCsvSession],
+    groups: Sequence[AlignedExtremaGroup],
+    *,
+    assignments: Mapping[ExtremaPointKey, float | None],
+    visible_range_seconds: tuple[float, float],
+    line_color_by_series: Mapping[SeriesKey, str],
+    color_by_series: Mapping[SeriesKey, str] | None,
+    point_colors: Mapping[ExtremaPointKey, str] | None,
+    fallback_order_by_series: Mapping[SeriesKey, int],
+    line_width: float,
+) -> int:
+    visible_start_seconds, visible_end_seconds = visible_range_seconds
+    session_by_id = {session.session_id: session for session in sessions}
+    assigned_curve_points = build_assigned_curve_points(groups, assignments)
+    rendered_curve_count = 0
+
+    for series_key, (x_values, y_values) in assigned_curve_points.items():
+        trimmed_x_values, trimmed_y_values = trim_series_to_range(
+            x_values,
+            y_values,
+            visible_start_seconds,
+            visible_end_seconds,
+        )
+        if not trimmed_y_values or not any(not math.isnan(value) for value in trimmed_y_values):
+            continue
+
+        session = session_by_id.get(series_key.session_id)
+        session_alias = (
+            session.alias.strip() or session.data.source_path.stem
+            if session is not None
+            else series_key.session_id
+        )
+        axis.plot(
+            trimmed_x_values,
+            trimmed_y_values,
+            linewidth=max(float(line_width), 1.2),
+            linestyle="--",
+            color=resolve_series_render_color(
+                series_key,
+                line_color_by_series=line_color_by_series,
+                color_by_series=color_by_series,
+                fallback_order_by_series=fallback_order_by_series,
+            ),
+            label=f"{session_alias} · 赋值曲线",
+        )
+        rendered_curve_count += 1
+
+    for group in groups:
+        if not visible_start_seconds <= float(group.anchor_seconds) <= visible_end_seconds:
+            continue
+        for member in group.members:
+            point_key = ExtremaPointKey(group.group_id, member.key)
+            assigned_value = assignments.get(point_key)
+            if assigned_value is None:
+                continue
+
+            axis.scatter(
+                [float(group.anchor_seconds)],
+                [float(assigned_value)],
+                color=resolve_extrema_point_color(
+                    point_key,
+                    line_color_by_series=line_color_by_series,
+                    color_by_series=color_by_series,
+                    point_colors=point_colors,
+                    fallback_order_by_series=fallback_order_by_series,
+                ),
+                s=30,
+                marker="o",
+                zorder=4,
+                label="_nolegend_",
+            )
+
+    return rendered_curve_count
+
+
+def configure_secondary_value_axis(axis, chart_style: ChartStyle) -> None:
+    axis.set_facecolor("none")
+    axis.yaxis.get_offset_text().set_visible(False)
+    axis.set_ylabel("赋值曲线")
+
+    if chart_style.curve_only_mode:
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.tick_params(
+            axis="both",
+            which="both",
+            left=False,
+            right=False,
+            labelleft=False,
+            labelright=False,
+            bottom=False,
+            top=False,
+            labelbottom=False,
+        )
+        axis.yaxis.label.set_visible(False)
+        return
+
+    if chart_style.axis_color:
+        axis.spines["right"].set_edgecolor(chart_style.axis_color)
+
+    tick_kwargs: dict[str, object] = {
+        "axis": "y",
+        "which": "both",
+        "labelright": chart_style.show_value_axis,
+    }
+    if chart_style.axis_color:
+        tick_kwargs["color"] = chart_style.axis_color
+    if chart_style.value_text_color:
+        tick_kwargs["labelcolor"] = chart_style.value_text_color
+        axis.yaxis.label.set_color(chart_style.value_text_color)
+    elif chart_style.axis_color:
+        axis.yaxis.label.set_color(chart_style.axis_color)
+
+    axis.tick_params(**tick_kwargs)
+    if not chart_style.show_value_axis:
+        axis.yaxis.label.set_visible(False)
 
 
 def load_hwinfo_csv(path: Path | str, preload_numeric: bool = False) -> HWiNFOData:
