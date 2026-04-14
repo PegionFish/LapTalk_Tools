@@ -332,7 +332,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.trim_duration_label_var = tk.StringVar(value="可视化范围：00:00:00 → 00:00:00")
         self._updating_trim_controls = False
         self.timeline_zoom_var = tk.DoubleVar(value=1.0)
-        self.timeline_status_var = tk.StringVar(value="时间轴：添加 CSV 后可拖动 clip 对齐、拖动边缘裁剪。")
+        self.timeline_status_var = tk.StringVar(value="时间轴：添加 CSV 后可拖动片段对齐、拖动边缘裁剪。")
         self.timeline_pixels_per_second = 12.0
         self.timeline_start_seconds = 0.0
         self.timeline_end_seconds = 60.0
@@ -432,7 +432,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.refresh_timeline()
 
     def _build_file_management_module(self, parent: tk.Misc) -> None:
-        self.file_management_module = ttk.Labelframe(parent, text="Module 1 | File Management", padding=(10, 8, 10, 8))
+        self.file_management_module = ttk.Labelframe(parent, text="模块 1 · 文件管理", padding=(10, 8, 10, 8))
         self.file_management_module.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         self.file_management_module.columnconfigure(0, weight=1)
         self.file_management_module.rowconfigure(0, weight=1)
@@ -449,13 +449,13 @@ class HWiNFOPlotterApp(tk.Tk):
             selectmode="extended",
             height=6,
         )
-        self.session_tree.heading("alias", text="Alias")
-        self.session_tree.heading("filename", text="File")
-        self.session_tree.heading("duration", text="Duration")
-        self.session_tree.heading("offset", text="Offset")
-        self.session_tree.heading("active_trim", text="Active Range")
-        self.session_tree.heading("reference", text="Ref")
-        self.session_tree.heading("preload", text="Cache")
+        self.session_tree.heading("alias", text="别名")
+        self.session_tree.heading("filename", text="文件")
+        self.session_tree.heading("duration", text="时长")
+        self.session_tree.heading("offset", text="偏移")
+        self.session_tree.heading("active_trim", text="有效片段")
+        self.session_tree.heading("reference", text="基准")
+        self.session_tree.heading("preload", text="预载")
         self.session_tree.column("alias", width=130, anchor="w")
         self.session_tree.column("filename", width=170, anchor="w")
         self.session_tree.column("duration", width=80, anchor="center")
@@ -478,23 +478,23 @@ class HWiNFOPlotterApp(tk.Tk):
         file_button_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         file_button_row.columnconfigure((0, 1, 2, 3), weight=1)
 
-        ttk.Button(file_button_row, text="Add CSV...", command=self.browse_csv).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ttk.Button(file_button_row, text="Remove Selected", command=self.remove_selected_sessions).grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(file_button_row, text="Clear All", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=4)
-        ttk.Button(file_button_row, text="Set Reference", command=self.set_selected_session_as_reference).grid(row=0, column=3, sticky="ew", padx=(4, 0))
+        ttk.Button(file_button_row, text="添加 CSV...", command=self.browse_csv).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(file_button_row, text="移除选中", command=self.remove_selected_sessions).grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Button(file_button_row, text="清空全部", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=4)
+        ttk.Button(file_button_row, text="设为基准", command=self.set_selected_session_as_reference).grid(row=0, column=3, sticky="ew", padx=(4, 0))
 
         session_detail_frame = ttk.Frame(self.file_management_module)
         session_detail_frame.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         session_detail_frame.columnconfigure(1, weight=1)
         session_detail_frame.columnconfigure(3, weight=1)
 
-        ttk.Label(session_detail_frame, text="Alias").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(session_detail_frame, text="别名").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.session_alias_entry = ttk.Entry(session_detail_frame, textvariable=self.session_alias_var)
         self.session_alias_entry.grid(row=0, column=1, sticky="ew")
         self.session_alias_entry.bind("<Return>", self.apply_selected_session_details)
         self.session_alias_entry.bind("<FocusOut>", self.apply_selected_session_details)
 
-        ttk.Label(session_detail_frame, text="Offset (s)").grid(row=0, column=2, sticky="w", padx=(12, 8))
+        ttk.Label(session_detail_frame, text="偏移(秒)").grid(row=0, column=2, sticky="w", padx=(12, 8))
         self.session_offset_entry = ttk.Entry(session_detail_frame, textvariable=self.session_offset_var, width=12)
         self.session_offset_entry.grid(row=0, column=3, sticky="ew")
         self.session_offset_entry.bind("<Return>", self.apply_selected_session_details)
@@ -516,7 +516,7 @@ class HWiNFOPlotterApp(tk.Tk):
             sticky="ew",
             padx=4,
         )
-        ttk.Button(offset_button_row, text="Apply", command=self.apply_selected_session_details).grid(
+        ttk.Button(offset_button_row, text="应用编辑", command=self.apply_selected_session_details).grid(
             row=0,
             column=2,
             sticky="ew",
@@ -541,11 +541,11 @@ class HWiNFOPlotterApp(tk.Tk):
         ).grid(row=4, column=0, sticky="w", pady=(8, 0))
         ttk.Label(
             self.file_management_module,
-            text="Positive offsets move clips right. Module 4 also supports drag-to-align and trim.",
+            text="正偏移向右移动曲线；模块 4 也支持拖动片段对齐和边缘裁剪。",
         ).grid(row=5, column=0, sticky="w", pady=(4, 0))
 
     def _build_parameter_and_chart_module(self, parent: tk.Misc) -> None:
-        self.parameter_chart_module = ttk.Labelframe(parent, text="Module 3 | Parameters + Chart Style", padding=(10, 8, 10, 8))
+        self.parameter_chart_module = ttk.Labelframe(parent, text="模块 3 · 参数筛选 + 图表设置", padding=(10, 8, 10, 8))
         self.parameter_chart_module.grid(row=1, column=0, sticky="nsew")
         self.parameter_chart_module.columnconfigure(0, weight=1)
         self.parameter_chart_module.rowconfigure(0, weight=1)
@@ -573,7 +573,7 @@ class HWiNFOPlotterApp(tk.Tk):
         control_panel.bind("<Configure>", self._on_control_host_configure)
         self.control_scroll_canvas.bind("<Configure>", self._on_control_canvas_configure)
 
-        ttk.Label(control_panel, text="Filter").grid(row=0, column=0, sticky="w")
+        ttk.Label(control_panel, text="参数筛选").grid(row=0, column=0, sticky="w")
         ttk.Entry(control_panel, textvariable=self.filter_var).grid(row=1, column=0, sticky="ew", pady=(4, 8))
 
         list_frame = ttk.Frame(control_panel)
@@ -601,10 +601,10 @@ class HWiNFOPlotterApp(tk.Tk):
         button_row.grid(row=4, column=0, sticky="ew", pady=(0, 10))
         button_row.columnconfigure((0, 1), weight=1)
 
-        ttk.Button(button_row, text="Select Visible", command=self.select_all_visible).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ttk.Button(button_row, text="Clear Selection", command=self.clear_selection).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Button(button_row, text="全选可见项", command=self.select_all_visible).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(button_row, text="清空选择", command=self.clear_selection).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        series_style_frame = ttk.Labelframe(control_panel, text="Series Colors", padding=12)
+        series_style_frame = ttk.Labelframe(control_panel, text="参数颜色", padding=12)
         series_style_frame.grid(row=5, column=0, sticky="nsew", pady=(0, 12))
         series_style_frame.columnconfigure(0, weight=1)
         series_style_frame.rowconfigure(0, weight=1)
@@ -644,46 +644,46 @@ class HWiNFOPlotterApp(tk.Tk):
         color_button_row.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         color_button_row.columnconfigure((0, 1, 2), weight=1)
 
-        ttk.Button(color_button_row, text="Apply Color", command=self.apply_series_color).grid(
+        ttk.Button(color_button_row, text="应用颜色", command=self.apply_series_color).grid(
             row=0,
             column=0,
             sticky="ew",
             padx=(0, 4),
         )
-        ttk.Button(color_button_row, text="Picker...", command=self.choose_series_color).grid(
+        ttk.Button(color_button_row, text="取色器...", command=self.choose_series_color).grid(
             row=0,
             column=1,
             sticky="ew",
             padx=4,
         )
-        ttk.Button(color_button_row, text="Clear Color", command=self.clear_series_color).grid(
+        ttk.Button(color_button_row, text="清除颜色", command=self.clear_series_color).grid(
             row=0,
             column=2,
             sticky="ew",
             padx=(4, 0),
         )
 
-        options_frame = ttk.Labelframe(control_panel, text="Chart Style", padding=12)
+        options_frame = ttk.Labelframe(control_panel, text="图表设置", padding=12)
         options_frame.grid(row=6, column=0, sticky="ew")
         options_frame.columnconfigure(1, weight=1)
         options_frame.columnconfigure(3, weight=1)
 
-        ttk.Label(options_frame, text="Chart Title").grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 8))
+        ttk.Label(options_frame, text="图表标题").grid(row=0, column=0, sticky="w", pady=(0, 8), padx=(0, 8))
         ttk.Entry(options_frame, textvariable=self.title_var).grid(row=0, column=1, columnspan=3, sticky="ew", pady=(0, 8))
 
-        ttk.Label(options_frame, text="Width (px)").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(options_frame, text="宽度(px)").grid(row=1, column=0, sticky="w", padx=(0, 8))
         ttk.Entry(options_frame, textvariable=self.width_var, width=10).grid(row=1, column=1, sticky="ew")
 
-        ttk.Label(options_frame, text="Height (px)").grid(row=1, column=2, sticky="w", padx=(12, 8))
+        ttk.Label(options_frame, text="高度(px)").grid(row=1, column=2, sticky="w", padx=(12, 8))
         ttk.Entry(options_frame, textvariable=self.height_var, width=10).grid(row=1, column=3, sticky="ew")
 
         ttk.Label(options_frame, text="DPI").grid(row=2, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         ttk.Entry(options_frame, textvariable=self.dpi_var, width=10).grid(row=2, column=1, sticky="ew", pady=(8, 0))
 
-        ttk.Label(options_frame, text="Line Width").grid(row=2, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
+        ttk.Label(options_frame, text="曲线线宽").grid(row=2, column=2, sticky="w", pady=(8, 0), padx=(12, 8))
         ttk.Entry(options_frame, textvariable=self.line_width_var, width=10).grid(row=2, column=3, sticky="ew", pady=(8, 0))
 
-        ttk.Label(options_frame, text="Time Density").grid(row=3, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Label(options_frame, text="时间刻度密度").grid(row=3, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         time_density_frame = ttk.Frame(options_frame)
         time_density_frame.grid(row=3, column=1, columnspan=3, sticky="ew", pady=(8, 0))
         time_density_frame.columnconfigure(0, weight=1)
@@ -700,7 +700,7 @@ class HWiNFOPlotterApp(tk.Tk):
         time_density_scale.grid(row=0, column=0, sticky="ew")
         ttk.Label(time_density_frame, textvariable=self.time_density_label_var).grid(row=0, column=1, sticky="e", padx=(8, 0))
 
-        ttk.Label(options_frame, text="Fixed Time Interval").grid(row=4, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Label(options_frame, text="固定时间间隔").grid(row=4, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         fixed_interval_frame = ttk.Frame(options_frame)
         fixed_interval_frame.grid(row=4, column=1, columnspan=3, sticky="ew", pady=(8, 0))
         fixed_interval_frame.columnconfigure(0, weight=1)
@@ -714,14 +714,14 @@ class HWiNFOPlotterApp(tk.Tk):
             width=8,
         ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
 
-        ttk.Checkbutton(options_frame, text="Show Grid", variable=self.show_grid_var).grid(
+        ttk.Checkbutton(options_frame, text="显示网格", variable=self.show_grid_var).grid(
             row=5,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
-        ttk.Checkbutton(options_frame, text="Show Legend", variable=self.show_legend_var).grid(
+        ttk.Checkbutton(options_frame, text="显示图例", variable=self.show_legend_var).grid(
             row=5,
             column=2,
             columnspan=2,
@@ -729,14 +729,14 @@ class HWiNFOPlotterApp(tk.Tk):
             pady=(8, 0),
         )
 
-        ttk.Checkbutton(options_frame, text="Show Time Labels", variable=self.show_time_axis_var).grid(
+        ttk.Checkbutton(options_frame, text="显示时间文字", variable=self.show_time_axis_var).grid(
             row=6,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
-        ttk.Checkbutton(options_frame, text="Show Value Labels", variable=self.show_value_axis_var).grid(
+        ttk.Checkbutton(options_frame, text="显示数值文字", variable=self.show_value_axis_var).grid(
             row=6,
             column=2,
             columnspan=2,
@@ -744,7 +744,7 @@ class HWiNFOPlotterApp(tk.Tk):
             pady=(8, 0),
         )
 
-        ttk.Checkbutton(options_frame, text="Curve Only Mode", variable=self.curve_only_mode_var).grid(
+        ttk.Checkbutton(options_frame, text="纯曲线模式", variable=self.curve_only_mode_var).grid(
             row=7,
             column=0,
             columnspan=4,
@@ -752,7 +752,7 @@ class HWiNFOPlotterApp(tk.Tk):
             pady=(8, 0),
         )
 
-        ttk.Label(options_frame, text="Legend Position").grid(row=8, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Label(options_frame, text="图例位置").grid(row=8, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         legend_location_box = ttk.Combobox(
             options_frame,
             textvariable=self.legend_location_var,
@@ -765,40 +765,40 @@ class HWiNFOPlotterApp(tk.Tk):
         self._build_chart_color_row(
             options_frame,
             row=9,
-            label_text="Axis Color",
+            label_text="坐标轴颜色",
             color_var=self.axis_color_var,
-            field_name="Axis Color",
+            field_name="坐标轴颜色",
         )
         self._build_chart_color_row(
             options_frame,
             row=10,
-            label_text="Grid Color",
+            label_text="网格颜色",
             color_var=self.grid_color_var,
-            field_name="Grid Color",
+            field_name="网格颜色",
         )
         self._build_chart_color_row(
             options_frame,
             row=11,
-            label_text="Time Text Color",
+            label_text="时间文字颜色",
             color_var=self.time_text_color_var,
-            field_name="Time Text Color",
+            field_name="时间文字颜色",
         )
         self._build_chart_color_row(
             options_frame,
             row=12,
-            label_text="Value Text Color",
+            label_text="数值文字颜色",
             color_var=self.value_text_color_var,
-            field_name="Value Text Color",
+            field_name="数值文字颜色",
         )
         self._build_chart_color_row(
             options_frame,
             row=13,
-            label_text="Legend Text Color",
+            label_text="图例文字颜色",
             color_var=self.legend_text_color_var,
-            field_name="Legend Text Color",
+            field_name="图例文字颜色",
         )
 
-        ttk.Label(options_frame, text="Font").grid(row=14, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Label(options_frame, text="字体").grid(row=14, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         ttk.Combobox(
             options_frame,
             textvariable=self.font_family_var,
@@ -813,7 +813,7 @@ class HWiNFOPlotterApp(tk.Tk):
             pady=(8, 0),
         )
 
-        ttk.Label(options_frame, text="Colors accept HEX input or the picker.").grid(
+        ttk.Label(options_frame, text="颜色支持 HEX 输入与取色器。").grid(
             row=15,
             column=0,
             columnspan=4,
@@ -825,11 +825,11 @@ class HWiNFOPlotterApp(tk.Tk):
         action_row.grid(row=7, column=0, sticky="ew", pady=(12, 0))
         action_row.columnconfigure((0, 1), weight=1)
 
-        ttk.Button(action_row, text="Reset Style", command=self.reset_chart_options).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ttk.Button(action_row, text="Export PNG", command=self.export_png).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Button(action_row, text="重置样式", command=self.reset_chart_options).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(action_row, text="导出透明 PNG", command=self.export_png).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
     def _build_preview_module(self, parent: tk.Misc) -> None:
-        self.preview_module = ttk.Labelframe(parent, text="Module 2 | Preview", padding=8)
+        self.preview_module = ttk.Labelframe(parent, text="模块 2 · 图表预览", padding=8)
         self.preview_module.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         self.preview_module.columnconfigure(0, weight=1)
         self.preview_module.rowconfigure(0, weight=1)
@@ -843,14 +843,14 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.preview_placeholder = ttk.Label(
             self.preview_host,
-            text="Add or drop CSV files, then select metrics to see the live preview.",
+            text="添加或拖入一个或多个 CSV，并选择参数后，图表会按当前配置自动预览。",
             anchor="center",
             justify="center",
         )
         self.preview_placeholder.grid(row=0, column=0, sticky="nsew")
 
     def _build_time_editing_module(self, parent: tk.Misc) -> None:
-        self.time_editing_module = ttk.Labelframe(parent, text="Module 4 | Work Area + Timeline", padding=(10, 8, 10, 8))
+        self.time_editing_module = ttk.Labelframe(parent, text="模块 4 · 可视化范围 + 时间轴", padding=(10, 8, 10, 8))
         self.time_editing_module.grid(row=1, column=0, sticky="nsew")
         self.time_editing_module.columnconfigure(0, weight=1)
         self.time_editing_module.rowconfigure(1, weight=1)
@@ -859,7 +859,7 @@ class HWiNFOPlotterApp(tk.Tk):
         toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         toolbar.columnconfigure(1, weight=1)
 
-        ttk.Label(toolbar, text="Zoom").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(toolbar, text="缩放").grid(row=0, column=0, sticky="w", padx=(0, 8))
         tk.Scale(
             toolbar,
             from_=0.25,
@@ -869,19 +869,19 @@ class HWiNFOPlotterApp(tk.Tk):
             showvalue=False,
             variable=self.timeline_zoom_var,
         ).grid(row=0, column=1, sticky="ew")
-        ttk.Button(toolbar, text="Reset Selected Align", command=self.reset_selected_session_offsets).grid(
+        ttk.Button(toolbar, text="重置所选对齐", command=self.reset_selected_session_offsets).grid(
             row=0,
             column=2,
             sticky="ew",
             padx=(8, 0),
         )
-        ttk.Button(toolbar, text="Reset Selected Trim", command=self.reset_selected_session_source_trims).grid(
+        ttk.Button(toolbar, text="重置所选裁剪", command=self.reset_selected_session_source_trims).grid(
             row=0,
             column=3,
             sticky="ew",
             padx=(8, 0),
         )
-        ttk.Button(toolbar, text="Reset Work Area", command=self.reset_work_area).grid(
+        ttk.Button(toolbar, text="重置工作区", command=self.reset_work_area).grid(
             row=0,
             column=4,
             sticky="ew",
@@ -1490,7 +1490,7 @@ class HWiNFOPlotterApp(tk.Tk):
                     fill="#5f6b7a",
                     text="添加 CSV 后，这里会显示统一时间轴。",
                 )
-                self.timeline_status_var.set("时间轴：添加 CSV 后可拖动 clip 对齐、拖动边缘裁剪。")
+                self.timeline_status_var.set("时间轴：添加 CSV 后可拖动片段对齐、拖动边缘裁剪。")
                 return
 
             metrics = self._get_timeline_metrics()
@@ -1612,7 +1612,7 @@ class HWiNFOPlotterApp(tk.Tk):
             top_y + metrics["work_area_height"] / 2,
             anchor="w",
             fill="#314463",
-            text="Work Area",
+            text="工作区",
             font=("Segoe UI", 9, "bold"),
         )
         start_handle_id = canvas.create_rectangle(
@@ -1680,7 +1680,7 @@ class HWiNFOPlotterApp(tk.Tk):
                 clip_top + metrics["clip_height"] / 2 + 13,
                 anchor="w",
                 fill="#748195",
-                text=f"offset {self.format_offset_seconds(session.offset_seconds)}s",
+                text=f"偏移 {self.format_offset_seconds(session.offset_seconds)}s",
                 font=("Segoe UI", 8),
             )
 
@@ -1719,7 +1719,7 @@ class HWiNFOPlotterApp(tk.Tk):
             )
             label_text = session.data.source_path.name
             if session.is_reference:
-                label_text = f"{label_text}  [REF]"
+                label_text = f"{label_text}  [基准]"
             canvas.create_text(
                 active_left_x + 8,
                 clip_top + metrics["clip_height"] / 2,
