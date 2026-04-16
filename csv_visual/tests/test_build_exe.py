@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import sys
+import shutil
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from build_exe import (
@@ -94,9 +94,11 @@ class BuildExeTests(unittest.TestCase):
             self.assertEqual(resolve_build_git_hash(ROOT), "abc123")
 
     def test_write_build_info_module_uses_project_build_directory(self) -> None:
-        with TemporaryDirectory() as temporary_dir:
-            project_dir = Path(temporary_dir)
-
+        project_dir = ROOT / "_test_output" / "test_build_exe_write_build_info"
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+        project_dir.mkdir(parents=True, exist_ok=True)
+        try:
             build_info_path = write_build_info_module(project_dir, "abc123")
 
             self.assertEqual(
@@ -104,6 +106,9 @@ class BuildExeTests(unittest.TestCase):
                 project_dir / "build" / "pyinstaller" / "generated" / f"{BUILD_INFO_MODULE_NAME}.py",
             )
             self.assertEqual(build_info_path.read_text(encoding="utf-8"), "BUILD_GIT_HASH = 'abc123'\n")
+        finally:
+            if project_dir.exists():
+                shutil.rmtree(project_dir)
 
     def test_resolve_output_path_matches_packaging_mode(self) -> None:
         self.assertEqual(

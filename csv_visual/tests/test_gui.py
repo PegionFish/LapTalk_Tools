@@ -11,7 +11,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hwinfo_plotter.app_about import AboutInfo, AboutLink
-from hwinfo_plotter.core import HWiNFOData, LoadedCsvSession, SensorColumn, SeriesKey
+from hwinfo_plotter.csv_log import HWiNFOData, SensorColumn
+from hwinfo_plotter.core import LoadedCsvSession, SeriesKey
 from hwinfo_plotter.gui import HWiNFOPlotterApp, PreloadSeriesResult, fit_size_within_bounds
 from hwinfo_plotter.runtime_logging import configure_runtime_logging, shutdown_runtime_logging
 
@@ -37,6 +38,26 @@ def build_synthetic_data(name: str = "RunA.csv", *, base_value: float = 1.0) -> 
             ["13/04/2026", "12:00:01", f"{base_value + 1:.1f}", f"{base_value + 11:.1f}"],
             ["13/04/2026", "12:00:02", f"{base_value + 2:.1f}", f"{base_value + 12:.1f}"],
             ["13/04/2026", "12:00:03", f"{base_value + 3:.1f}", f"{base_value + 13:.1f}"],
+        ],
+    )
+
+
+def build_shifted_synthetic_data(name: str = "RunB.csv", *, base_value: float = 5.0) -> HWiNFOData:
+    base_time = datetime(2026, 4, 13, 12, 0, 0)
+    return HWiNFOData(
+        source_path=Path(name),
+        encoding="utf-8",
+        headers=["Date", "Time", "Ignored", "CPU", "GPU"],
+        columns=[
+            SensorColumn(index=3, name="CPU", occurrence=1, display_name="[003] CPU"),
+            SensorColumn(index=4, name="GPU", occurrence=1, display_name="[004] GPU"),
+        ],
+        timestamps=[base_time + timedelta(seconds=index) for index in range(4)],
+        rows=[
+            ["13/04/2026", "12:00:00", "x", f"{base_value + 0:.1f}", f"{base_value + 10:.1f}"],
+            ["13/04/2026", "12:00:01", "x", f"{base_value + 1:.1f}", f"{base_value + 11:.1f}"],
+            ["13/04/2026", "12:00:02", "x", f"{base_value + 2:.1f}", f"{base_value + 12:.1f}"],
+            ["13/04/2026", "12:00:03", "x", f"{base_value + 3:.1f}", f"{base_value + 13:.1f}"],
         ],
     )
 
@@ -649,6 +670,90 @@ class GuiBehaviorTests(unittest.TestCase):
                 ),
             )
             mock_refresh.assert_called_once_with()
+        finally:
+            app.on_close()
+
+    def test_shared_parameter_selection_matches_shifted_column_indices(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                LoadedCsvSession(
+                    session_id="run_a",
+                    alias="RunA",
+                    data=build_synthetic_data("RunA.csv"),
+                    is_reference=True,
+                ),
+                LoadedCsvSession(
+                    session_id="run_b",
+                    alias="RunB",
+                    data=build_shifted_synthetic_data("RunB.csv"),
+                ),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+
+            self.assertEqual(app.column_listbox.get(0, "end"), ("[002] CPU", "[003] GPU"))
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.column_listbox.selection_set(0)
+                app.on_column_selection_changed()
+
+            self.assertEqual(
+                app.selected_series_keys,
+                {
+                    SeriesKey("run_a", 2),
+                    SeriesKey("run_b", 3),
+                },
+            )
+            self.assertEqual(
+                app.selected_series_listbox.get(0, "end"),
+                (
+                    "[RunA] [002] CPU",
+                    "[RunB] [003] CPU",
+                ),
+            )
+            mock_refresh.assert_called_once_with()
+        finally:
+            app.on_close()
+
+    def test_extrema_source_matches_shifted_column_indices(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                LoadedCsvSession(
+                    session_id="run_a",
+                    alias="RunA",
+                    data=build_synthetic_data("RunA.csv"),
+                    is_reference=True,
+                ),
+                LoadedCsvSession(
+                    session_id="run_b",
+                    alias="RunB",
+                    data=build_shifted_synthetic_data("RunB.csv"),
+                ),
+            ]
+            app.extrema_enabled_var.set(True)
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+
+            config = app.build_extrema_detection_config()
+
+            self.assertIsNotNone(config)
+            self.assertEqual(
+                config.source_series_keys,
+                (
+                    SeriesKey("run_a", 2),
+                    SeriesKey("run_b", 3),
+                ),
+            )
         finally:
             app.on_close()
 

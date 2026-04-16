@@ -1,3 +1,10 @@
+from .csv_log import (
+    CsvLogData,
+    HWiNFOData,
+    SensorColumn,
+    load_csv_log,
+    load_hwinfo_csv,
+)
 from .core import (
     AlignedExtremaGroup,
     ChartStyle,
@@ -5,9 +12,7 @@ from .core import (
     ExtremaAssignment,
     ExtremaDetectionConfig,
     ExtremaPointKey,
-    HWiNFOData,
     LoadedCsvSession,
-    SensorColumn,
     SeriesDescriptor,
     SeriesKey,
     build_assigned_curve_points,
@@ -16,7 +21,6 @@ from .core import (
     detect_extrema_for_sessions,
     detect_series_extrema,
     group_aligned_extrema,
-    load_hwinfo_csv,
     save_figure,
 )
 
@@ -27,6 +31,7 @@ __all__ = [
     "ExtremaAssignment",
     "ExtremaDetectionConfig",
     "ExtremaPointKey",
+    "CsvLogData",
     "HWiNFOData",
     "LoadedCsvSession",
     "SensorColumn",
@@ -38,6 +43,7 @@ __all__ = [
     "detect_extrema_for_sessions",
     "detect_series_extrema",
     "group_aligned_extrema",
+    "load_csv_log",
     "load_hwinfo_csv",
     "save_figure",
 ]

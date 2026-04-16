@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import math
 import shutil
-import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +11,14 @@ from unittest.mock import patch
 
 from matplotlib.colors import to_rgba
 
+from hwinfo_plotter.csv_log import (
+    HWiNFOData,
+    SensorColumn,
+    choose_best_decoding,
+    decode_csv_bytes,
+    load_hwinfo_csv,
+    parse_numeric_value,
+)
 from hwinfo_plotter.core import (
     AlignedExtremaGroup,
     ChartStyle,
@@ -19,27 +26,21 @@ from hwinfo_plotter.core import (
     ExtremaAssignment,
     ExtremaDetectionConfig,
     ExtremaPointKey,
-    HWiNFOData,
     LoadedCsvSession,
-    SensorColumn,
     SeriesKey,
     build_assigned_curve_points,
     build_comparison_figure,
     build_comparison_output_name,
     build_figure,
-    choose_best_decoding,
     compute_global_time_bounds,
     compute_session_active_timeline_range,
     compute_session_timeline_range,
-    decode_csv_bytes,
     detect_extrema_for_sessions,
     detect_series_extrema,
     filter_visible_series,
     format_compact_elapsed_time,
     group_aligned_extrema,
-    load_hwinfo_csv,
     normalize_offsets_for_reference,
-    parse_numeric_value,
     render_figure_png_bytes,
     resolve_session_source_trim_range,
     resolve_tick_interval_seconds,
@@ -587,18 +588,39 @@ class ExtremaCoreTests(unittest.TestCase):
 class CoreSmokeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.temp_dir = tempfile.TemporaryDirectory()
-        cls.fixture_path = write_synthetic_hwinfo_csv(Path(cls.temp_dir.name) / "synthetic_hwinfo.csv")
+        cls.temp_dir_path = ROOT / "_test_output" / "test_core_smoke"
+        if cls.temp_dir_path.exists():
+            shutil.rmtree(cls.temp_dir_path)
+        cls.temp_dir_path.mkdir(parents=True, exist_ok=True)
+        cls.fixture_path = write_synthetic_hwinfo_csv(cls.temp_dir_path / "synthetic_hwinfo.csv")
         cls.data = load_hwinfo_csv(cls.fixture_path)
 
     @classmethod
     def tearDownClass(cls) -> None:
-        cls.temp_dir.cleanup()
+        if cls.temp_dir_path.exists():
+            shutil.rmtree(cls.temp_dir_path)
 
     def test_loads_synthetic_csv_fixture(self) -> None:
         self.assertGreater(len(self.data.timestamps), 0)
         self.assertEqual(len(self.data.columns), 4)
         self.assertEqual(self.data.source_path.name, "synthetic_hwinfo.csv")
+
+    def test_loads_hwinfo_footer_source_names(self) -> None:
+        fixture_path = self.temp_dir_path / "synthetic_hwinfo_footer.csv"
+        with fixture_path.open("w", encoding="utf-8-sig", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            headers = ["Date", "Time", "CPU", "GPU"]
+            writer.writerow(headers)
+            writer.writerow(["13/04/2026", "12:00:00", "10.0", "20.0"])
+            writer.writerow(["13/04/2026", "12:00:01", "11.0", "21.0"])
+            writer.writerow(headers)
+            writer.writerow(["", "", "CPU [#0]: Example", "GPU [#1]: Example"])
+
+        data = load_hwinfo_csv(fixture_path)
+
+        self.assertEqual(data.skipped_rows, 2)
+        self.assertEqual(data.columns[0].source_name, "CPU [#0]: Example")
+        self.assertEqual(data.columns[1].source_name, "GPU [#1]: Example")
 
     def test_loads_synthetic_csv_with_preloaded_series(self) -> None:
         data = load_hwinfo_csv(self.fixture_path, preload_numeric=True)
@@ -726,7 +748,7 @@ class CoreSmokeTests(unittest.TestCase):
             ],
         )
 
-        with patch("hwinfo_plotter.core.parse_numeric_value", wraps=parse_numeric_value) as mock_parse:
+        with patch("hwinfo_plotter.csv_log.parse_numeric_value", wraps=parse_numeric_value) as mock_parse:
             first_series = data.extract_series(2)
             second_series = data.extract_series(2)
 

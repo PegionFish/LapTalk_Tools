@@ -17,17 +17,16 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 from uuid import uuid4
 
 from .app_about import AboutInfo, get_app_about_info
+from .csv_log import CsvLogData, SensorColumn, load_hwinfo_csv
 from .core import (
     AlignedExtremaGroup,
     ChartStyle,
     DEFAULT_TIME_TICK_DENSITY,
     ExtremaDetectionConfig,
     ExtremaPointKey,
-    HWiNFOData,
     LoadedCsvSession,
     MAX_TIME_TICK_DENSITY,
     MIN_TIME_TICK_DENSITY,
-    SensorColumn,
     SeriesDescriptor,
     SeriesKey,
     build_comparison_figure,
@@ -42,7 +41,6 @@ from .core import (
     format_compact_elapsed_time,
     group_aligned_extrema,
     list_available_font_families,
-    load_hwinfo_csv,
     normalize_offsets_for_reference,
     render_figure_png_bytes,
     resolve_session_source_trim_range,
@@ -287,7 +285,7 @@ class PreviewRenderResult:
 class PreloadSeriesRequest:
     request_id: int
     session_id: str
-    data: HWiNFOData
+    data: CsvLogData
 
 
 @dataclass(frozen=True)
@@ -1298,41 +1296,49 @@ class HWiNFOPlotterApp(tk.Tk):
         if len(render_sessions) == 1:
             return list(first_session.data.columns)
 
-        column_signatures_by_session = [
-            {
-                (column.index, column.name, column.occurrence)
-                for column in session.data.columns
-            }
-            for session in render_sessions[1:]
-        ]
+        shared_parameter_keys = {column.shared_key for column in first_session.data.columns}
+        for session in render_sessions[1:]:
+            shared_parameter_keys &= {column.shared_key for column in session.data.columns}
+
         return [
             column
             for column in first_session.data.columns
-            if all(
-                (column.index, column.name, column.occurrence) in column_signatures
-                for column_signatures in column_signatures_by_session
-            )
+            if column.shared_key in shared_parameter_keys
         ]
 
-    def get_selected_parameter_indices(self) -> tuple[int, ...]:
-        selected_parameter_indices = {series_key.column_index for series_key in self.selected_series_keys}
+    def get_series_column(self, series_key: SeriesKey) -> SensorColumn | None:
+        session = self.get_session_by_id(series_key.session_id)
+        if session is None:
+            return None
+        try:
+            return session.data.column_for_index(series_key.column_index)
+        except KeyError:
+            return None
+
+    def get_selected_parameter_shared_keys(self) -> tuple[str, ...]:
+        selected_parameter_keys: set[str] = set()
+        for series_key in self.selected_series_keys:
+            column = self.get_series_column(series_key)
+            if column is not None:
+                selected_parameter_keys.add(column.shared_key)
+
         return tuple(
-            column.index
+            column.shared_key
             for column in self.get_shared_parameter_columns()
-            if column.index in selected_parameter_indices
+            if column.shared_key in selected_parameter_keys
         )
 
-    def expand_series_keys_for_parameter_indices(self, parameter_indices: Sequence[int]) -> set[SeriesKey]:
-        parameter_index_set = set(parameter_indices)
-        if not parameter_index_set:
+    def expand_series_keys_for_parameter_shared_keys(self, parameter_shared_keys: Sequence[str]) -> set[SeriesKey]:
+        parameter_key_set = set(parameter_shared_keys)
+        if not parameter_key_set:
             return set()
 
         expanded_series_keys: set[SeriesKey] = set()
         for session in self.get_render_sessions():
-            available_column_indices = {column.index for column in session.data.columns}
-            for parameter_index in parameter_index_set:
-                if parameter_index in available_column_indices:
-                    expanded_series_keys.add(SeriesKey(session.session_id, parameter_index))
+            for parameter_key in parameter_key_set:
+                column = session.data.find_column_by_shared_key(parameter_key)
+                if column is not None:
+                    expanded_series_keys.add(SeriesKey(session.session_id, column.index))
         return expanded_series_keys
 
     def sync_selected_parameter_series(self) -> None:
@@ -1340,13 +1346,14 @@ class HWiNFOPlotterApp(tk.Tk):
             self.selected_series_keys.clear()
             return
 
-        shared_parameter_indices = {column.index for column in self.get_shared_parameter_columns()}
-        selected_parameter_indices = {
-            series_key.column_index
-            for series_key in self.selected_series_keys
-            if series_key.column_index in shared_parameter_indices
-        }
-        self.selected_series_keys = self.expand_series_keys_for_parameter_indices(selected_parameter_indices)
+        shared_parameter_keys = {column.shared_key for column in self.get_shared_parameter_columns()}
+        selected_parameter_keys: set[str] = set()
+        for series_key in self.selected_series_keys:
+            column = self.get_series_column(series_key)
+            if column is not None and column.shared_key in shared_parameter_keys:
+                selected_parameter_keys.add(column.shared_key)
+
+        self.selected_series_keys = self.expand_series_keys_for_parameter_shared_keys(selected_parameter_keys)
 
     def refresh_session_tree(self, preferred_selection: Sequence[str] | None = None) -> None:
         selected_session_ids = tuple(preferred_selection) if preferred_selection is not None else self.get_selected_session_ids()
@@ -1474,9 +1481,10 @@ class HWiNFOPlotterApp(tk.Tk):
 
         render_sessions = self.get_render_sessions()
         source_series_keys = tuple(
-            SeriesKey(session.session_id, source_column.index)
+            SeriesKey(session.session_id, column.index)
             for session in render_sessions
-            if any(column.index == source_column.index for column in session.data.columns)
+            for column in (session.data.find_column_by_shared_key(source_column.shared_key),)
+            if column is not None
         )
         if not source_series_keys:
             return None
@@ -2763,7 +2771,7 @@ class HWiNFOPlotterApp(tk.Tk):
             return
 
         keyword = self.filter_var.get().strip().lower()
-        selected_parameter_indices = set(self.get_selected_parameter_indices())
+        selected_parameter_keys = set(self.get_selected_parameter_shared_keys())
         for column in self.get_shared_parameter_columns():
             haystack = f"{column.name} {column.display_name}".lower()
             if keyword and keyword not in haystack:
@@ -2773,29 +2781,29 @@ class HWiNFOPlotterApp(tk.Tk):
             self.column_listbox.insert(tk.END, column.display_name)
 
         for listbox_index, column in enumerate(self.visible_parameter_columns):
-            if column.index in selected_parameter_indices:
+            if column.shared_key in selected_parameter_keys:
                 self.column_listbox.selection_set(listbox_index)
 
         self.update_selection_label()
 
     def on_column_selection_changed(self, _event=None) -> None:
-        visible_parameter_indices = {column.index for column in self.visible_parameter_columns}
-        selected_parameter_indices = set(self.get_selected_parameter_indices())
-        selected_parameter_indices -= visible_parameter_indices
+        visible_parameter_keys = {column.shared_key for column in self.visible_parameter_columns}
+        selected_parameter_keys = set(self.get_selected_parameter_shared_keys())
+        selected_parameter_keys -= visible_parameter_keys
 
         for selected_position in self.column_listbox.curselection():
             if selected_position >= len(self.visible_parameter_columns):
                 continue
-            selected_parameter_indices.add(self.visible_parameter_columns[selected_position].index)
+            selected_parameter_keys.add(self.visible_parameter_columns[selected_position].shared_key)
 
-        self.selected_series_keys = self.expand_series_keys_for_parameter_indices(selected_parameter_indices)
+        self.selected_series_keys = self.expand_series_keys_for_parameter_shared_keys(selected_parameter_keys)
 
         self.update_selection_label()
         self.refresh_selected_series_list()
         self.schedule_preview_refresh()
 
     def update_selection_label(self) -> None:
-        count = len(self.get_selected_parameter_indices())
+        count = len(self.get_selected_parameter_shared_keys())
         if count == 0:
             self.selection_var.set("当前未选择参数")
         else:
@@ -2897,9 +2905,9 @@ class HWiNFOPlotterApp(tk.Tk):
             return
 
         self.column_listbox.selection_set(0, tk.END)
-        selected_parameter_indices = set(self.get_selected_parameter_indices())
-        selected_parameter_indices.update(column.index for column in self.visible_parameter_columns)
-        self.selected_series_keys = self.expand_series_keys_for_parameter_indices(selected_parameter_indices)
+        selected_parameter_keys = set(self.get_selected_parameter_shared_keys())
+        selected_parameter_keys.update(column.shared_key for column in self.visible_parameter_columns)
+        self.selected_series_keys = self.expand_series_keys_for_parameter_shared_keys(selected_parameter_keys)
         self.update_selection_label()
         self.refresh_selected_series_list()
         self.schedule_preview_refresh()
