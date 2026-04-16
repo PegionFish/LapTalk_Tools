@@ -2460,10 +2460,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self.sync_session_editor()
             self.refresh_timeline()
 
-        if action == "move_clip":
-            tracked_session_ids = tuple(selected_session_ids)
-        else:
-            tracked_session_ids = (session_id,)
+        tracked_session_ids = (session_id,)
         start_offsets = {
             tracked_session_id: float(self.get_session_by_id(tracked_session_id).offset_seconds)
             for tracked_session_id in tracked_session_ids

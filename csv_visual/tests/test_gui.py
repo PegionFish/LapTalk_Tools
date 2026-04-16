@@ -531,7 +531,7 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_dragging_selected_timeline_clip_moves_multi_selection(self) -> None:
+    def test_dragging_selected_timeline_clip_moves_only_target_session(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
@@ -558,11 +558,11 @@ class GuiBehaviorTests(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual([session.offset_seconds for session in app.sessions], [1.0, 6.0])
+            self.assertEqual([session.offset_seconds for session in app.sessions], [0.0, 6.0])
         finally:
             app.on_close()
 
-    def test_dragging_selected_timeline_clip_allows_negative_offsets_with_zero_origin(self) -> None:
+    def test_dragging_selected_timeline_clip_allows_negative_offset_for_target_only(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
@@ -589,7 +589,7 @@ class GuiBehaviorTests(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual([session.offset_seconds for session in app.sessions], [-1.0, 1.0])
+            self.assertEqual([session.offset_seconds for session in app.sessions], [3.0, 1.0])
             self.assertEqual(app.timeline_start_seconds, 0.0)
         finally:
             app.on_close()
