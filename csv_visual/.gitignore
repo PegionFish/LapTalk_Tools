@@ -6,3 +6,4 @@ venv/
 build/
 dist/
 _test_output/
+logs/

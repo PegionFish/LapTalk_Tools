@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import logging
 import sys
 import threading
 import tkinter as tk
@@ -11,6 +12,7 @@ from ctypes import wintypes
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from queue import Empty, Queue
+from time import perf_counter
 from tkinter import colorchooser, filedialog, messagebox, ttk
 from uuid import uuid4
 
@@ -47,8 +49,10 @@ from .core import (
     save_figure,
 )
 from .win32_image import get_png_dimensions, resize_png_bytes
+from .runtime_logging import configure_runtime_logging, get_runtime_log_path
 
 
+logger = logging.getLogger("csv_visual.gui")
 LEGEND_LOCATION_CHOICES = {
     "自动": "best",
     "右上": "upper right",
@@ -447,6 +451,14 @@ class HWiNFOPlotterApp(tk.Tk):
         default_csv = self._find_default_csv()
         if default_csv:
             self.default_csv_after_id = self.after(100, lambda path=default_csv: self.add_csv_files((path,)))
+            logger.info("Default CSV auto-load scheduled path=%s", default_csv)
+
+        logger.info(
+            "Initialized HWiNFOPlotterApp log_path=%s preview_worker=%s preload_worker=%s",
+            get_runtime_log_path(),
+            self.preview_worker.name,
+            self.preload_worker.name,
+        )
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=3)
@@ -1182,6 +1194,80 @@ class HWiNFOPlotterApp(tk.Tk):
             return f"{int(value)}"
         return f"{value:.3f}".rstrip("0").rstrip(".")
 
+    @staticmethod
+    def _format_log_float(value: float) -> str:
+        return f"{float(value):.3f}"
+
+    def _format_session_log_summary(self, session: LoadedCsvSession) -> str:
+        trim_start_seconds, trim_end_seconds = resolve_session_source_trim_range(session)
+        session_alias = session.alias.strip() or session.data.source_path.stem
+        return (
+            f"{session_alias}(id={session.session_id},file={session.data.source_path.name},"
+            f"reference={session.is_reference},visible={session.is_visible},"
+            f"offset={self._format_log_float(session.offset_seconds)},"
+            f"trim={self._format_log_float(trim_start_seconds)}->{self._format_log_float(trim_end_seconds)},"
+            f"preload_ready={session.preload_ready})"
+        )
+
+    def _summarize_sessions_for_log(
+        self,
+        sessions: Sequence[LoadedCsvSession] | None = None,
+        *,
+        limit: int = 6,
+    ) -> str:
+        source_sessions = list(self.sessions if sessions is None else sessions)
+        if not source_sessions:
+            return "-"
+
+        parts = [self._format_session_log_summary(session) for session in source_sessions[:limit]]
+        if len(source_sessions) > limit:
+            parts.append(f"...(+{len(source_sessions) - limit} more)")
+        return "; ".join(parts)
+
+    def _summarize_series_keys_for_log(
+        self,
+        series_keys: Sequence[SeriesKey],
+        *,
+        limit: int = 6,
+    ) -> str:
+        if not series_keys:
+            return "-"
+
+        parts: list[str] = []
+        for series_key in series_keys[:limit]:
+            session = self.get_session_by_id(series_key.session_id)
+            session_alias = series_key.session_id
+            column_label = str(series_key.column_index)
+            if session is not None:
+                session_alias = session.alias.strip() or session.data.source_path.stem
+                try:
+                    column_label = session.data.column_for_index(series_key.column_index).name
+                except KeyError:
+                    column_label = str(series_key.column_index)
+            parts.append(f"{session_alias}:{column_label}[{series_key.column_index}]")
+
+        if len(series_keys) > limit:
+            parts.append(f"...(+{len(series_keys) - limit} more)")
+        return "; ".join(parts)
+
+    def log_comparison_structure(self, reason: str) -> None:
+        render_sessions = self.get_render_sessions()
+        shared_parameter_columns = self.get_shared_parameter_columns()
+        selected_series = self.get_selected_series_keys()
+        logger.info(
+            (
+                "Comparison structure refreshed reason=%s total_sessions=%d render_sessions=%d "
+                "shared_parameters=%d selected_series=%d sessions_detail=%s selected_detail=%s"
+            ),
+            reason,
+            len(self.sessions),
+            len(render_sessions),
+            len(shared_parameter_columns),
+            len(selected_series),
+            self._summarize_sessions_for_log(),
+            self._summarize_series_keys_for_log(selected_series),
+        )
+
     def _build_session_id(self) -> str:
         return uuid4().hex
 
@@ -1326,6 +1412,7 @@ class HWiNFOPlotterApp(tk.Tk):
         preferred_selection: Sequence[str] | None = None,
         preserve_trim_range: bool = True,
         refresh_preview: bool = True,
+        reason: str = "session_change",
     ) -> None:
         self.refresh_session_tree(preferred_selection=preferred_selection)
         self.sync_selected_parameter_series()
@@ -1334,6 +1421,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.refresh_selected_series_list()
         self.refresh_extrema_groups()
         self.configure_trim_controls(preserve_range=preserve_trim_range)
+        self.log_comparison_structure(reason)
         if refresh_preview:
             self.schedule_preview_refresh(immediate=True)
 
@@ -1432,6 +1520,7 @@ class HWiNFOPlotterApp(tk.Tk):
         try:
             extrema_config = self.build_extrema_detection_config()
         except ValueError as exc:
+            logger.exception("Failed to refresh extrema groups while building config")
             self.detected_extrema_groups = ()
             self.extrema_assignments.clear()
             self.extrema_point_colors.clear()
@@ -1444,6 +1533,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self.extrema_assignments.clear()
             self.extrema_point_colors.clear()
             self.refresh_extrema_group_tree(preferred_point_key=None)
+            logger.debug("Extrema mapping disabled; cleared detected groups")
             return
 
         detected_extrema = detect_extrema_for_sessions(self.get_render_sessions(), extrema_config)
@@ -1471,6 +1561,18 @@ class HWiNFOPlotterApp(tk.Tk):
             if point_key in valid_point_keys
         }
         self.refresh_extrema_group_tree(preferred_point_key=preferred_point_key)
+        logger.info(
+            (
+                "Extrema groups refreshed groups=%d source=%s mode=%s assignments=%d "
+                "point_colors=%d alignment_tolerance=%.3f"
+            ),
+            len(self.detected_extrema_groups),
+            self.extrema_source_var.get().strip() or "<none>",
+            extrema_config.mode,
+            len(self.extrema_assignments),
+            len(self.extrema_point_colors),
+            float(extrema_config.alignment_tolerance_seconds),
+        )
 
     def refresh_extrema_group_tree(self, *, preferred_point_key: ExtremaPointKey | None) -> None:
         if self.extrema_group_tree is None:
@@ -1623,6 +1725,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.schedule_preview_refresh(immediate=True)
 
     def add_csv_files(self, file_paths: Sequence[str]) -> None:
+        logger.info("Adding CSV files requested_paths=%s", list(file_paths))
         normalized_paths: list[str] = []
         seen_paths: set[str] = set()
         for file_path in file_paths:
@@ -1635,6 +1738,7 @@ class HWiNFOPlotterApp(tk.Tk):
             normalized_paths.append(normalized_path)
 
         if not normalized_paths:
+            logger.warning("No CSV files found in requested_paths=%s", list(file_paths))
             messagebox.showerror("未找到 CSV", "请选择或拖入至少一个 .csv / .CSV 文件。")
             return
 
@@ -1650,16 +1754,28 @@ class HWiNFOPlotterApp(tk.Tk):
         self.cancel_pending_preview_requests()
         self.status_var.set("正在加载 CSV 并整理可用参数，请稍候...")
         self.update_idletasks()
+        logger.info(
+            "Normalized CSV paths count=%d existing_sessions=%d paths=%s",
+            len(normalized_paths),
+            len(self.sessions),
+            normalized_paths,
+        )
 
         for normalized_path in normalized_paths:
             existing_session_id = existing_paths.get(normalized_path)
             if existing_session_id is not None:
                 skipped_paths.append(Path(normalized_path).name)
+                logger.info(
+                    "Skipping duplicate CSV path=%s existing_session_id=%s",
+                    normalized_path,
+                    existing_session_id,
+                )
                 continue
 
             try:
                 data = load_hwinfo_csv(normalized_path, preload_numeric=False)
             except Exception as exc:
+                logger.exception("Failed to add CSV path=%s", normalized_path)
                 failed_messages.append(f"{Path(normalized_path).name}：{exc}")
                 continue
 
@@ -1683,6 +1799,14 @@ class HWiNFOPlotterApp(tk.Tk):
             self.refresh_after_session_change(
                 preferred_selection=[session.session_id for session in new_sessions],
                 preserve_trim_range=had_existing_sessions,
+                reason="add_csv_files",
+            )
+            logger.info(
+                "Added CSV files new_sessions=%d total_sessions=%d skipped=%d failed=%d",
+                len(new_sessions),
+                len(self.sessions),
+                len(skipped_paths),
+                len(failed_messages),
             )
             self.status_var.set(
                 f"已加载 {len(new_sessions)} 个 CSV 文件，当前共 {len(self.sessions)} 个文件，"
@@ -1690,8 +1814,10 @@ class HWiNFOPlotterApp(tk.Tk):
             )
         elif skipped_paths and not failed_messages:
             self.refresh_session_tree()
+            logger.info("All requested CSV files were duplicates skipped=%d", len(skipped_paths))
             self.status_var.set("选中的 CSV 已存在，已跳过重复导入。")
         elif failed_messages:
+            logger.warning("CSV loading failed for all requested files count=%d", len(failed_messages))
             self.status_var.set("CSV 加载失败。")
 
         if failed_messages:
@@ -1706,6 +1832,7 @@ class HWiNFOPlotterApp(tk.Tk):
         if not selected_session_ids:
             return
 
+        logger.info("Removing selected sessions session_ids=%s", sorted(selected_session_ids))
         self.sessions = [session for session in self.sessions if session.session_id not in selected_session_ids]
         self.selected_series_keys = {
             series_key
@@ -1724,7 +1851,12 @@ class HWiNFOPlotterApp(tk.Tk):
         if not self.sessions:
             self.cancel_pending_preview_requests()
             self.cancel_pending_preload_requests()
-            self.refresh_after_session_change(preferred_selection=(), preserve_trim_range=False, refresh_preview=False)
+            self.refresh_after_session_change(
+                preferred_selection=(),
+                preserve_trim_range=False,
+                refresh_preview=False,
+                reason="remove_selected_sessions",
+            )
             self.clear_preview()
             self.status_var.set("请添加一个或多个 HWiNFO CSV 文件。")
             return
@@ -1732,17 +1864,24 @@ class HWiNFOPlotterApp(tk.Tk):
         self.refresh_after_session_change(
             preferred_selection=[self.sessions[0].session_id],
             preserve_trim_range=True,
+            reason="remove_selected_sessions",
         )
         self.status_var.set("已移除选中的 CSV 文件。")
 
     def clear_all_sessions(self) -> None:
+        logger.info("Clearing all sessions total_sessions=%d", len(self.sessions))
         self.sessions.clear()
         self.visible_series_descriptors.clear()
         self.selected_series_keys.clear()
         self.series_colors.clear()
         self.cancel_pending_preview_requests()
         self.cancel_pending_preload_requests()
-        self.refresh_after_session_change(preferred_selection=(), preserve_trim_range=False, refresh_preview=False)
+        self.refresh_after_session_change(
+            preferred_selection=(),
+            preserve_trim_range=False,
+            refresh_preview=False,
+            reason="clear_all_sessions",
+        )
         self.clear_preview()
         self.status_var.set("请添加一个或多个 HWiNFO CSV 文件。")
 
@@ -1756,6 +1895,12 @@ class HWiNFOPlotterApp(tk.Tk):
         self.refresh_after_session_change(
             preferred_selection=[selected_session.session_id],
             preserve_trim_range=True,
+            reason="set_selected_session_as_reference",
+        )
+        logger.info(
+            "Set selected session as reference session_id=%s alias=%s",
+            selected_session.session_id,
+            selected_session.alias,
         )
         self.status_var.set(f"已将 {selected_session.alias} 设为基准文件。")
 
@@ -1775,6 +1920,12 @@ class HWiNFOPlotterApp(tk.Tk):
         self.refresh_after_session_change(
             preferred_selection=[selected_session.session_id],
             preserve_trim_range=True,
+            reason="apply_selected_session_alias",
+        )
+        logger.info(
+            "Updated session alias session_id=%s alias=%s",
+            selected_session.session_id,
+            alias,
         )
         self.status_var.set(f"已更新 {alias} 的别名。")
         return "break"
@@ -1812,6 +1963,13 @@ class HWiNFOPlotterApp(tk.Tk):
         self.refresh_after_session_change(
             preferred_selection=[selected_session.session_id],
             preserve_trim_range=True,
+            reason="apply_selected_session_details",
+        )
+        logger.info(
+            "Updated session details session_id=%s alias=%s offset_seconds=%.3f",
+            selected_session.session_id,
+            alias,
+            float(offset_seconds),
         )
         self.status_var.set(f"已更新 {alias} 的别名和偏移。")
         return "break"
@@ -2542,6 +2700,10 @@ class HWiNFOPlotterApp(tk.Tk):
         if file_drop_manager.register():
             self.file_drop_manager = file_drop_manager
             self.schedule_file_drop_processing()
+            logger.info("Enabled native Windows file drop support")
+            return
+
+        logger.debug("Native Windows file drop support unavailable")
 
     def schedule_file_drop_processing(self) -> None:
         if self.file_drop_after_id is not None:
@@ -2565,6 +2727,11 @@ class HWiNFOPlotterApp(tk.Tk):
 
     def handle_dropped_files(self, file_paths: Sequence[str]) -> None:
         csv_paths = self.pick_csv_drop_paths(file_paths)
+        logger.info(
+            "Handling dropped files received=%d accepted_csv=%d",
+            len(file_paths),
+            len(csv_paths),
+        )
         if not csv_paths:
             messagebox.showerror("未找到 CSV", "请拖入 .csv 或 .CSV 文件。")
             return
@@ -2781,6 +2948,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         delay_ms = 0 if immediate else 350
         self.preview_after_id = self.after(delay_ms, self.refresh_preview)
+        logger.debug("Scheduled preview refresh immediate=%s delay_ms=%d", immediate, delay_ms)
 
     def refresh_preview(self) -> None:
         self.preview_after_id = None
@@ -2797,10 +2965,17 @@ class HWiNFOPlotterApp(tk.Tk):
         try:
             preview_request = self.build_preview_request()
         except Exception as exc:
+            logger.exception("Failed to build preview request")
             self.status_var.set(f"自动预览未更新：{exc}")
             return
 
         self.enqueue_preview_request(preview_request)
+        logger.info(
+            "Queued preview request request_id=%d sessions=%d selected_series=%d",
+            preview_request.request_id,
+            len(preview_request.sessions),
+            len(preview_request.selected_series),
+        )
         self.status_var.set("正在后台生成图表预览...")
 
     def export_png(self) -> None:
@@ -2821,6 +2996,12 @@ class HWiNFOPlotterApp(tk.Tk):
             )
         else:
             default_name = build_comparison_output_name(render_sessions, selected_series)
+        logger.info(
+            "Preparing PNG export sessions=%d selected_series=%d suggested_name=%s",
+            len(render_sessions),
+            len(selected_series),
+            default_name,
+        )
         output_path = filedialog.asksaveasfilename(
             title="导出透明 PNG",
             defaultextension=".png",
@@ -2857,6 +3038,19 @@ class HWiNFOPlotterApp(tk.Tk):
         if not render_sessions:
             raise ValueError("请先加载一个或多个 CSV 文件。")
         extrema_config = self.build_extrema_detection_config()
+        logger.info(
+            (
+                "Building current figure sessions=%d selected_series=%d size=%dx%d dpi=%d "
+                "visible_range=%s selected_detail=%s"
+            ),
+            len(render_sessions),
+            len(selected_series),
+            width_px,
+            height_px,
+            dpi,
+            visible_range_seconds if visible_range_seconds is not None else "auto",
+            self._summarize_series_keys_for_log(selected_series),
+        )
 
         return build_comparison_figure(
             render_sessions,
@@ -2889,7 +3083,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self.preview_request_id += 1
         self.active_preview_request_id = self.preview_request_id
-        return PreviewRenderRequest(
+        preview_request = PreviewRenderRequest(
             request_id=self.preview_request_id,
             sessions=render_sessions,
             selected_series=tuple(selected_series),
@@ -2903,6 +3097,20 @@ class HWiNFOPlotterApp(tk.Tk):
             extrema_assignments=dict(self.extrema_assignments),
             extrema_point_colors=dict(self.extrema_point_colors),
         )
+        logger.debug(
+            (
+                "Built preview request request_id=%d sessions=%d selected_series=%d "
+                "size=%dx%d dpi=%d visible_range=%s"
+            ),
+            preview_request.request_id,
+            len(preview_request.sessions),
+            len(preview_request.selected_series),
+            preview_request.width_px,
+            preview_request.height_px,
+            preview_request.dpi,
+            preview_request.visible_range_seconds if preview_request.visible_range_seconds is not None else "auto",
+        )
+        return preview_request
 
     def collect_render_options(
         self,
@@ -2946,6 +3154,7 @@ class HWiNFOPlotterApp(tk.Tk):
         with self.preview_request_lock:
             self.pending_preview_request = preview_request
             self.preview_request_event.set()
+        logger.debug("Enqueued preview request request_id=%d", preview_request.request_id)
 
     def cancel_pending_preview_requests(self) -> None:
         self.preview_request_id += 1
@@ -2953,6 +3162,7 @@ class HWiNFOPlotterApp(tk.Tk):
         with self.preview_request_lock:
             self.pending_preview_request = None
             self.preview_request_event.clear()
+        logger.debug("Cancelled pending preview requests active_request_id=%d", self.active_preview_request_id)
 
     def start_background_preload(self, session: LoadedCsvSession) -> None:
         self.preload_request_id += 1
@@ -2962,6 +3172,12 @@ class HWiNFOPlotterApp(tk.Tk):
             data=session.data,
         )
         self.preload_requests.put(preload_request)
+        logger.info(
+            "Queued background preload request_id=%d session_id=%s source=%s",
+            preload_request.request_id,
+            session.session_id,
+            session.data.source_path,
+        )
 
     def cancel_pending_preload_requests(self) -> None:
         while True:
@@ -2971,6 +3187,7 @@ class HWiNFOPlotterApp(tk.Tk):
                 break
 
     def _preview_worker_loop(self) -> None:
+        logger.debug("Preview worker loop started")
         while not self.preview_shutdown_event.is_set():
             self.preview_request_event.wait(0.1)
             if self.preview_shutdown_event.is_set():
@@ -2987,6 +3204,13 @@ class HWiNFOPlotterApp(tk.Tk):
                 continue
 
             figure = None
+            started_at = perf_counter()
+            logger.info(
+                "Rendering preview request_id=%d sessions=%d selected_series=%d",
+                preview_request.request_id,
+                len(preview_request.sessions),
+                len(preview_request.selected_series),
+            )
             try:
                 figure = build_comparison_figure(
                     preview_request.sessions,
@@ -3009,6 +3233,7 @@ class HWiNFOPlotterApp(tk.Tk):
                         error_message=str(exc),
                     )
                 )
+                logger.exception("Preview render failed request_id=%d", preview_request.request_id)
                 continue
             finally:
                 if figure is not None:
@@ -3020,8 +3245,15 @@ class HWiNFOPlotterApp(tk.Tk):
                     png_bytes=png_bytes,
                 )
             )
+            logger.info(
+                "Rendered preview request_id=%d png_bytes=%d elapsed_ms=%.2f",
+                preview_request.request_id,
+                len(png_bytes),
+                (perf_counter() - started_at) * 1000,
+            )
 
     def _preload_worker_loop(self) -> None:
+        logger.debug("Preload worker loop started")
         while not self.preview_shutdown_event.is_set():
             try:
                 preload_request = self.preload_requests.get(timeout=0.1)
@@ -3031,6 +3263,12 @@ class HWiNFOPlotterApp(tk.Tk):
                 return
 
             try:
+                started_at = perf_counter()
+                logger.info(
+                    "Preloading session data request_id=%d session_id=%s",
+                    preload_request.request_id,
+                    preload_request.session_id,
+                )
                 preload_request.data.preload_numeric_series()
             except Exception as exc:
                 self.preload_results.put(
@@ -3040,6 +3278,11 @@ class HWiNFOPlotterApp(tk.Tk):
                         error_message=str(exc),
                     )
                 )
+                logger.exception(
+                    "Background preload failed request_id=%d session_id=%s",
+                    preload_request.request_id,
+                    preload_request.session_id,
+                )
                 continue
 
             self.preload_results.put(
@@ -3048,19 +3291,40 @@ class HWiNFOPlotterApp(tk.Tk):
                     session_id=preload_request.session_id,
                 )
             )
+            logger.info(
+                "Preloaded session data request_id=%d session_id=%s elapsed_ms=%.2f",
+                preload_request.request_id,
+                preload_request.session_id,
+                (perf_counter() - started_at) * 1000,
+            )
 
     def process_preview_results(self) -> None:
         try:
             while True:
                 preview_result = self.preview_results.get_nowait()
                 if preview_result.request_id != self.active_preview_request_id:
+                    logger.debug(
+                        "Discarded stale preview result request_id=%d active_request_id=%d",
+                        preview_result.request_id,
+                        self.active_preview_request_id,
+                    )
                     continue
 
                 if preview_result.error_message is not None:
+                    logger.warning(
+                        "Preview result failed request_id=%d error=%s",
+                        preview_result.request_id,
+                        preview_result.error_message,
+                    )
                     self.status_var.set(f"自动预览未更新：{preview_result.error_message}")
                     continue
 
                 if preview_result.png_bytes is not None:
+                    logger.info(
+                        "Applying preview result request_id=%d png_bytes=%d",
+                        preview_result.request_id,
+                        len(preview_result.png_bytes),
+                    )
                     self.show_preview_image(preview_result.png_bytes)
                     self.status_var.set("图表预览已在后台更新。")
         except Empty:
@@ -3086,11 +3350,22 @@ class HWiNFOPlotterApp(tk.Tk):
                 self.refresh_session_tree(preferred_selection=self.get_selected_session_ids())
 
                 if preload_result.error_message is not None:
+                    logger.warning(
+                        "Preload result failed request_id=%d session_id=%s error=%s",
+                        preload_result.request_id,
+                        preload_result.session_id,
+                        preload_result.error_message,
+                    )
                     if not self.get_selected_series_keys():
                         self.status_var.set(f"后台预载失败：{preload_result.error_message}")
                     continue
 
                 if not self.get_selected_series_keys():
+                    logger.info(
+                        "Preload result applied request_id=%d session_id=%s",
+                        preload_result.request_id,
+                        preload_result.session_id,
+                    )
                     session_alias = session.alias if session.alias else session.data.source_path.stem
                     self.status_var.set(f"{session_alias} 的数值序列已在后台预载入内存。")
         except Empty:
@@ -3100,6 +3375,11 @@ class HWiNFOPlotterApp(tk.Tk):
                 self.process_results_after_id = self.after(80, self.process_preview_results)
 
     def on_close(self) -> None:
+        logger.info(
+            "Closing application total_sessions=%d session_detail=%s",
+            len(self.sessions),
+            self._summarize_sessions_for_log(),
+        )
         self._on_about_window_closed()
         if self.file_drop_after_id is not None:
             try:
@@ -3142,6 +3422,7 @@ class HWiNFOPlotterApp(tk.Tk):
             except tk.TclError:
                 pass
             self.timeline_preview_after_id = None
+        logger.info("Destroying Tk application window")
         self.destroy()
 
     def get_selected_series_keys(self) -> list[SeriesKey]:
@@ -3368,5 +3649,12 @@ class HWiNFOPlotterApp(tk.Tk):
 
 
 def launch_app() -> None:
+    log_path = configure_runtime_logging()
+    logger.info("Launching HWiNFOPlotterApp log_path=%s", log_path)
     app = HWiNFOPlotterApp()
-    app.mainloop()
+    try:
+        app.mainloop()
+        logger.info("Application main loop exited normally")
+    except Exception:
+        logger.exception("Application main loop terminated unexpectedly")
+        raise

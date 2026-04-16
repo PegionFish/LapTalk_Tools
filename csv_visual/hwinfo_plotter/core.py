@@ -3,6 +3,7 @@ from __future__ import annotations
 import codecs
 import csv
 import io
+import logging
 import math
 import re
 import threading
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from statistics import median
+from time import perf_counter
 from typing import Mapping, Sequence
 
 from matplotlib import font_manager, rcParams
@@ -69,6 +71,7 @@ EXTREMA_KINDS = ("peak", "valley")
 EXTREMA_MODES = (*EXTREMA_KINDS, "both")
 
 _FONT_READY = False
+logger = logging.getLogger("csv_visual.core")
 
 
 @dataclass(frozen=True)
@@ -199,6 +202,13 @@ class HWiNFOData:
         if cached_series is not None:
             return cached_series
 
+        started_at = perf_counter()
+        logger.debug(
+            "Extracting numeric series source=%s column_index=%s rows=%d",
+            self.source_path,
+            column_index,
+            len(self.rows),
+        )
         x_values: list[float] = []
         y_values: list[float] = []
 
@@ -219,13 +229,28 @@ class HWiNFOData:
             if cached_series is not None:
                 return cached_series
             self._series_cache[column_index] = series
+            logger.debug(
+                "Extracted numeric series source=%s column_index=%s points=%d elapsed_ms=%.2f",
+                self.source_path,
+                column_index,
+                len(y_values),
+                (perf_counter() - started_at) * 1000,
+            )
             return series
 
     def preload_numeric_series(self) -> None:
         with self._series_cache_lock:
             if self._all_series_preloaded:
+                logger.debug("Numeric series already preloaded source=%s", self.source_path)
                 return
 
+        started_at = perf_counter()
+        logger.info(
+            "Preloading numeric series source=%s columns=%d rows=%d",
+            self.source_path,
+            len(self._column_indices),
+            len(self.rows),
+        )
         x_series_map = {column_index: [] for column_index in self._column_indices}
         y_series_map = {column_index: [] for column_index in self._column_indices}
 
@@ -249,6 +274,12 @@ class HWiNFOData:
                 for column_index in self._column_indices
             }
             self._all_series_preloaded = True
+            logger.info(
+                "Preloaded numeric series source=%s cached_columns=%d elapsed_ms=%.2f",
+                self.source_path,
+                len(self._series_cache),
+                (perf_counter() - started_at) * 1000,
+            )
 
 
 @dataclass(frozen=True)
@@ -351,6 +382,29 @@ def compute_global_time_bounds(sessions: Sequence[LoadedCsvSession]) -> tuple[fl
     return float(start_seconds), float(end_seconds)
 
 
+def summarize_loaded_sessions_for_log(sessions: Sequence[LoadedCsvSession], *, limit: int = 6) -> str:
+    if not sessions:
+        return "-"
+
+    parts: list[str] = []
+    for session in sessions[:limit]:
+        trim_start_seconds, trim_end_seconds = resolve_session_source_trim_range(session)
+        session_alias = session.alias.strip() or session.data.source_path.stem
+        parts.append(
+            (
+                f"{session_alias}(id={session.session_id},file={session.data.source_path.name},"
+                f"reference={session.is_reference},visible={session.is_visible},"
+                f"offset={float(session.offset_seconds):.3f},"
+                f"trim={trim_start_seconds:.3f}->{trim_end_seconds:.3f},"
+                f"preload_ready={session.preload_ready})"
+            )
+        )
+
+    if len(sessions) > limit:
+        parts.append(f"...(+{len(sessions) - limit} more)")
+    return "; ".join(parts)
+
+
 def normalize_offsets_for_reference(
     sessions: Sequence[LoadedCsvSession],
     reference_session_id: str,
@@ -444,6 +498,17 @@ def filter_visible_series(
             )
         )
 
+    logger.debug(
+        (
+            "Filtered visible series visible_sessions=%d selected_series=%d "
+            "result_series=%d visible_range=(%.3f, %.3f)"
+        ),
+        len(visible_sessions),
+        len(selected_series),
+        len(visible_series),
+        visible_start_seconds,
+        visible_end_seconds,
+    )
     return visible_series
 
 
@@ -586,7 +651,7 @@ def detect_extrema_for_sessions(
             )
         )
 
-    return tuple(
+    result = tuple(
         sorted(
             detected_extrema,
             key=lambda item: (
@@ -598,6 +663,18 @@ def detect_extrema_for_sessions(
             ),
         )
     )
+    logger.debug(
+        (
+            "Detected extrema sessions=%d source_series=%d mode=%s "
+            "result_extrema=%d tolerance=%.3f"
+        ),
+        len(visible_sessions),
+        len(seen_series_keys),
+        config.mode,
+        len(result),
+        float(config.alignment_tolerance_seconds),
+    )
+    return result
 
 
 def group_aligned_extrema(
@@ -739,7 +816,22 @@ def build_comparison_figure(
     extrema_assignments: Mapping[ExtremaPointKey, float | None] | Sequence[ExtremaAssignment] | None = None,
     extrema_point_colors: Mapping[ExtremaPointKey, str] | None = None,
 ) -> Figure:
+    started_at = perf_counter()
     visible_sessions = tuple(session for session in sessions if session.is_visible)
+    logger.info(
+        (
+            "Building comparison figure sessions=%d selected_series=%d "
+            "size=%dx%d dpi=%d visible_range=%s extrema_enabled=%s sessions_detail=%s"
+        ),
+        len(visible_sessions),
+        len(selected_series),
+        width_px,
+        height_px,
+        dpi,
+        visible_range_seconds if visible_range_seconds is not None else "auto",
+        bool(extrema_config is not None and extrema_config.enabled and extrema_config.source_series_keys),
+        summarize_loaded_sessions_for_log(visible_sessions),
+    )
     if not visible_sessions:
         raise ValueError("请至少加载一个 CSV 文件。")
     if not selected_series:
@@ -917,6 +1009,17 @@ def build_comparison_figure(
 
     configure_axis_visibility(axis, chart_style)
 
+    logger.info(
+        (
+            "Built comparison figure plotted_lines=%d visible_series=%d grouped_extrema=%d "
+            "assigned_curve_groups=%d elapsed_ms=%.2f"
+        ),
+        plotted_line_count,
+        len(visible_series),
+        len(grouped_extrema),
+        rendered_curve_count,
+        (perf_counter() - started_at) * 1000,
+    )
     return figure
 
 
@@ -1393,10 +1496,12 @@ def configure_secondary_value_axis(axis, chart_style: ChartStyle) -> None:
 
 def load_hwinfo_csv(path: Path | str, preload_numeric: bool = False) -> HWiNFOData:
     source_path = Path(path).expanduser().resolve()
+    logger.info("Loading CSV file path=%s preload_numeric=%s", source_path, preload_numeric)
     if not source_path.exists():
         raise FileNotFoundError(f"找不到 CSV 文件：{source_path}")
 
     raw_bytes = source_path.read_bytes()
+    logger.debug("Read CSV bytes path=%s bytes=%d", source_path, len(raw_bytes))
     text, encoding_used = decode_csv_bytes(raw_bytes)
     reader = csv.reader(io.StringIO(text))
 
@@ -1447,6 +1552,21 @@ def load_hwinfo_csv(path: Path | str, preload_numeric: bool = False) -> HWiNFODa
     if preload_numeric:
         data.preload_numeric_series()
 
+    duration_seconds = data.elapsed_seconds[-1] if data.elapsed_seconds else 0.0
+    logger.info(
+        (
+            "Loaded CSV file path=%s encoding=%s headers=%d sensor_columns=%d "
+            "rows=%d skipped_rows=%d duration_seconds=%.3f preload_numeric=%s"
+        ),
+        source_path,
+        encoding_used,
+        len(headers),
+        len(columns),
+        len(rows),
+        skipped_rows,
+        float(duration_seconds),
+        preload_numeric,
+    )
     return data
 
 
@@ -1575,8 +1695,11 @@ def build_figure(
 
 def save_figure(figure: Figure, output_path: Path | str) -> Path:
     destination = Path(output_path).expanduser().resolve()
+    logger.info("Saving figure path=%s", destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(render_figure_png_bytes(figure))
+    png_bytes = render_figure_png_bytes(figure)
+    destination.write_bytes(png_bytes)
+    logger.info("Saved figure path=%s bytes=%d", destination, len(png_bytes))
     return destination
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import shutil
 import tkinter as tk
 import unittest
 from dataclasses import replace
@@ -12,6 +13,7 @@ from unittest.mock import patch
 from hwinfo_plotter.app_about import AboutInfo, AboutLink
 from hwinfo_plotter.core import HWiNFOData, LoadedCsvSession, SensorColumn, SeriesKey
 from hwinfo_plotter.gui import HWiNFOPlotterApp, PreloadSeriesResult, fit_size_within_bounds
+from hwinfo_plotter.runtime_logging import configure_runtime_logging, shutdown_runtime_logging
 
 
 TEST_PREVIEW_PNG_BYTES = base64.b64decode(
@@ -573,6 +575,43 @@ class GuiBehaviorTests(unittest.TestCase):
             )
         finally:
             app.on_close()
+
+    def test_refresh_after_session_change_writes_comparison_structure_log(self) -> None:
+        output_root = Path.cwd() / "_test_output" / "test_gui_runtime_logging"
+        if output_root.exists():
+            shutil.rmtree(output_root)
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        log_path = configure_runtime_logging(output_root / "logs", force_reconfigure=True)
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session("run_a", "RunA", is_reference=True),
+                build_session("run_b", "RunB", base_value=5.0),
+            ]
+            app.selected_series_keys = {
+                SeriesKey("run_a", 2),
+                SeriesKey("run_b", 2),
+            }
+
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+                reason="test_refresh",
+            )
+        finally:
+            app.on_close()
+            shutdown_runtime_logging()
+
+        log_text = log_path.read_text(encoding="utf-8")
+
+        self.assertIn("Comparison structure refreshed", log_text)
+        self.assertIn("reason=test_refresh", log_text)
+        self.assertIn("shared_parameters=2", log_text)
+        self.assertIn("RunA", log_text)
+        self.assertIn("RunB", log_text)
 
     def test_multi_file_parameter_selection_applies_to_all_loaded_sessions(self) -> None:
         app = HWiNFOPlotterApp()

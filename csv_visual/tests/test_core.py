@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import math
+import shutil
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -44,6 +45,7 @@ from hwinfo_plotter.core import (
     resolve_tick_interval_seconds,
     save_figure,
 )
+from hwinfo_plotter.runtime_logging import configure_runtime_logging, shutdown_runtime_logging
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -682,7 +684,6 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertFalse(axis.xaxis.get_offset_text().get_visible())
         self.assertEqual(axis.lines[0].get_linewidth(), 2.4)
         self.assertIsNone(axis.get_legend())
-
     def test_compact_time_formatter_omits_zero_hour_component(self) -> None:
         self.assertEqual(format_compact_elapsed_time(65), "01:05")
         self.assertEqual(format_compact_elapsed_time(3605), "01:00:05")
@@ -1209,6 +1210,28 @@ class CoreSmokeTests(unittest.TestCase):
         )
 
         self.assertEqual(output_name, "compare__RunA__RunB__CPU_GPU.png")
+
+
+class RuntimeLoggingTests(unittest.TestCase):
+    def test_load_hwinfo_csv_writes_runtime_log_entry(self) -> None:
+        output_root = ROOT / "_test_output" / "test_core_runtime_logging"
+        if output_root.exists():
+            shutil.rmtree(output_root)
+        output_root.mkdir(parents=True, exist_ok=True)
+
+        fixture_path = write_synthetic_hwinfo_csv(output_root / "synthetic_hwinfo.csv")
+        log_path = configure_runtime_logging(output_root / "logs", force_reconfigure=True)
+        try:
+            load_hwinfo_csv(fixture_path)
+        finally:
+            shutdown_runtime_logging()
+
+        log_text = log_path.read_text(encoding="utf-8")
+
+        self.assertIn("Loading CSV file", log_text)
+        self.assertIn("Loaded CSV file", log_text)
+        self.assertIn("synthetic_hwinfo.csv", log_text)
+        self.assertIn("rows=24", log_text)
 
 
 if __name__ == "__main__":
