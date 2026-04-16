@@ -499,6 +499,26 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_timeline_shows_fixed_session_labels_on_left(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", offset_seconds=5.0, is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            session_overlay_texts = canvas_texts_by_tag(app.timeline_canvas, "timeline_session_overlay")
+
+            self.assertIn("RunA", session_overlay_texts)
+            self.assertIn("偏移 5s", session_overlay_texts)
+        finally:
+            app.on_close()
+
     def test_timeline_zero_origin_overlay_stays_fixed_when_scrolled(self) -> None:
         app = HWiNFOPlotterApp()
         try:
@@ -520,6 +540,33 @@ class GuiBehaviorTests(unittest.TestCase):
             app.update_idletasks()
 
             after_bbox = canvas_text_bbox_by_tag(app.timeline_canvas, "timeline_origin_overlay")
+            after_offset = after_bbox[0] - int(round(app.timeline_canvas.canvasx(0.0)))
+
+            self.assertEqual(before_offset, after_offset)
+        finally:
+            app.on_close()
+
+    def test_timeline_session_labels_stay_fixed_when_scrolled(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", offset_seconds=5.0, is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.timeline_zoom_factor = 4.0
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            before_bbox = canvas_text_bbox_by_tag(app.timeline_canvas, "timeline_session_overlay")
+            before_offset = before_bbox[0] - int(round(app.timeline_canvas.canvasx(0.0)))
+
+            app._on_timeline_horizontal_scroll("moveto", 1.0)
+            app.update_idletasks()
+
+            after_bbox = canvas_text_bbox_by_tag(app.timeline_canvas, "timeline_session_overlay")
             after_offset = after_bbox[0] - int(round(app.timeline_canvas.canvasx(0.0)))
 
             self.assertEqual(before_offset, after_offset)

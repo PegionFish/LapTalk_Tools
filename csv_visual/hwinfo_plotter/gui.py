@@ -2343,23 +2343,6 @@ class HWiNFOPlotterApp(tk.Tk):
             clip_fill = "#7ea7ff"
             clip_outline = "#1f4aa8" if is_selected else "#5578be"
 
-            canvas.create_text(
-                12,
-                clip_top + metrics["clip_height"] / 2,
-                anchor="w",
-                fill="#2e3c4f",
-                text=session.alias,
-                font=("Segoe UI", 9, "bold" if is_selected else "normal"),
-            )
-            canvas.create_text(
-                12,
-                clip_top + metrics["clip_height"] / 2 + 13,
-                anchor="w",
-                fill="#748195",
-                text=f"偏移 {self.format_offset_seconds(session.offset_seconds)}s",
-                font=("Segoe UI", 8),
-            )
-
             canvas.create_rectangle(
                 full_left_x,
                 clip_top,
@@ -2415,11 +2398,43 @@ class HWiNFOPlotterApp(tk.Tk):
             return
 
         canvas = self.timeline_canvas
+        canvas.delete("timeline_fixed_overlay")
         canvas.delete("timeline_origin_overlay")
+        canvas.delete("timeline_session_overlay")
         if not self.get_render_sessions():
             return
 
+        metrics = self._get_timeline_metrics()
         viewport_left_x = float(canvas.canvasx(0.0))
+        viewport_top_y = float(canvas.canvasy(0.0))
+        gutter_left_x = viewport_left_x
+        gutter_right_x = viewport_left_x + metrics["left_gutter"] - 2.0
+        scroll_region = canvas.cget("scrollregion")
+        content_height = max(float(canvas.winfo_height()), 220.0)
+        if scroll_region:
+            try:
+                _x1, _y1, _x2, y2 = [float(value) for value in str(scroll_region).split()]
+                content_height = max(content_height, y2)
+            except ValueError:
+                pass
+        canvas.create_rectangle(
+            gutter_left_x,
+            viewport_top_y,
+            gutter_right_x,
+            viewport_top_y + content_height,
+            fill="#f7f8fb",
+            outline="",
+            tags=("timeline_fixed_overlay",),
+        )
+        canvas.create_line(
+            gutter_right_x,
+            viewport_top_y,
+            gutter_right_x,
+            viewport_top_y + content_height,
+            fill="#d6dbe6",
+            tags=("timeline_fixed_overlay",),
+        )
+
         badge_left_x = viewport_left_x + 8.0
         badge_top_y = 6.0
         badge_right_x = badge_left_x + 88.0
@@ -2431,7 +2446,7 @@ class HWiNFOPlotterApp(tk.Tk):
             badge_bottom_y,
             fill="#eef3ff",
             outline="#9fb7e6",
-            tags=("timeline_origin_overlay",),
+            tags=("timeline_fixed_overlay", "timeline_origin_overlay"),
         )
         canvas.create_text(
             (badge_left_x + badge_right_x) / 2.0,
@@ -2439,9 +2454,36 @@ class HWiNFOPlotterApp(tk.Tk):
             text="原点 00:00",
             fill="#35528a",
             font=("Segoe UI", 9, "bold"),
-            tags=("timeline_origin_overlay",),
+            tags=("timeline_fixed_overlay", "timeline_origin_overlay"),
         )
+
+        for row_index, session in enumerate(self.get_render_sessions()):
+            row_top = metrics["tracks_top"] + row_index * metrics["track_row_height"]
+            clip_top = row_top + 9
+            clip_center_y = clip_top + metrics["clip_height"] / 2
+            is_selected = session.session_id in set(self.get_selected_session_ids())
+            canvas.create_text(
+                viewport_left_x + 12.0,
+                clip_center_y,
+                anchor="w",
+                fill="#2e3c4f",
+                text=session.alias,
+                font=("Segoe UI", 9, "bold" if is_selected else "normal"),
+                tags=("timeline_fixed_overlay", "timeline_session_overlay"),
+            )
+            canvas.create_text(
+                viewport_left_x + 12.0,
+                clip_center_y + 13.0,
+                anchor="w",
+                fill="#748195",
+                text=f"偏移 {self.format_offset_seconds(session.offset_seconds)}s",
+                font=("Segoe UI", 8),
+                tags=("timeline_fixed_overlay", "timeline_session_overlay"),
+            )
+
+        canvas.tag_raise("timeline_fixed_overlay")
         canvas.tag_raise("timeline_origin_overlay")
+        canvas.tag_raise("timeline_session_overlay")
 
     def _timeline_seconds_to_x(self, seconds: float, metrics: dict[str, float] | None = None) -> float:
         resolved_metrics = metrics or self._get_timeline_metrics()
