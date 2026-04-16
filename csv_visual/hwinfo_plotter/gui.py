@@ -416,7 +416,6 @@ class HWiNFOPlotterApp(tk.Tk):
             self.line_width_var,
             self.fixed_time_interval_var,
             self.fixed_time_interval_unit_var,
-            self.fixed_value_interval_var,
             self.legend_location_var,
             self.axis_color_var,
             self.grid_color_var,
@@ -426,6 +425,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self.font_family_var,
         ):
             option_var.trace_add("write", self._on_chart_option_changed)
+        self.fixed_value_interval_var.trace_add("write", self._on_fixed_value_interval_changed)
         for option_var in (
             self.show_grid_var,
             self.show_legend_var,
@@ -2055,6 +2055,18 @@ class HWiNFOPlotterApp(tk.Tk):
     def _on_chart_option_changed(self, *_args) -> None:
         if self._suppress_chart_option_refresh:
             return
+        self.schedule_preview_refresh()
+
+    def _on_fixed_value_interval_changed(self, *_args) -> None:
+        if self._suppress_chart_option_refresh:
+            return
+        try:
+            self.parse_optional_positive_float(self.fixed_value_interval_var.get(), "固定数值间隔")
+        except ValueError as exc:
+            self.status_var.set(f"固定数值间隔暂未应用：{exc}")
+            return
+
+        self.status_var.set("固定数值间隔已变更，正在更新自动预览...")
         self.schedule_preview_refresh()
 
     def _on_standard_chart_element_changed(self, *_args) -> None:

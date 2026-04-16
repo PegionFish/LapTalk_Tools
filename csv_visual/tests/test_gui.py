@@ -1263,6 +1263,33 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_fixed_value_interval_change_schedules_preview_refresh(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.fixed_value_interval_var.set("10")
+
+            mock_refresh.assert_called_once_with()
+            self.assertEqual(app.status_var.get(), "固定数值间隔已变更，正在更新自动预览...")
+        finally:
+            app.on_close()
+
+    def test_invalid_fixed_value_interval_does_not_schedule_preview_refresh(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.fixed_value_interval_var.set("0")
+
+            mock_refresh.assert_not_called()
+            self.assertIn("固定数值间隔暂未应用", app.status_var.get())
+            self.assertIn("固定数值间隔 必须大于 0。", app.status_var.get())
+        finally:
+            app.on_close()
+
     def test_extrema_controls_offer_shared_sources_when_enabled(self) -> None:
         app = HWiNFOPlotterApp()
         try:
