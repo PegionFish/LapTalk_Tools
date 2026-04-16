@@ -90,6 +90,7 @@ class ChartStyle:
     legend_location: str = "best"
     time_tick_density: int = DEFAULT_TIME_TICK_DENSITY
     fixed_time_interval_seconds: int | None = None
+    fixed_value_interval: float | None = None
     legend_text_color: str | None = None
     font_family: str | None = None
 
@@ -762,6 +763,8 @@ def build_comparison_figure(
         )
     if chart_style.fixed_time_interval_seconds is not None and chart_style.fixed_time_interval_seconds <= 0:
         raise ValueError("固定时间刻度间隔必须大于 0。")
+    if chart_style.fixed_value_interval is not None and chart_style.fixed_value_interval <= 0:
+        raise ValueError("固定数值刻度间隔必须大于 0。")
     validate_chart_style_colors(chart_style)
 
     display_shift_seconds = compute_display_shift_seconds(visible_sessions)
@@ -1442,6 +1445,8 @@ def build_figure(
         )
     if chart_style.fixed_time_interval_seconds is not None and chart_style.fixed_time_interval_seconds <= 0:
         raise ValueError("固定时间刻度间隔必须大于 0。")
+    if chart_style.fixed_value_interval is not None and chart_style.fixed_value_interval <= 0:
+        raise ValueError("固定数值刻度间隔必须大于 0。")
     validate_chart_style_colors(chart_style)
     visible_start_seconds, visible_end_seconds = resolve_visible_range_seconds(data, visible_range_seconds)
 
@@ -1685,6 +1690,9 @@ def configure_axis_visibility(axis, chart_style: ChartStyle) -> None:
         y_tick_kwargs["labelcolor"] = chart_style.value_text_color
         axis.yaxis.get_offset_text().set_color(chart_style.value_text_color)
 
+    if chart_style.fixed_value_interval is not None:
+        axis.yaxis.set_major_locator(build_fixed_value_locator(chart_style.fixed_value_interval))
+
     axis.tick_params(**x_tick_kwargs)
     axis.tick_params(**y_tick_kwargs)
     apply_axis_font_family(axis, chart_style)
@@ -1780,6 +1788,10 @@ def resolve_tick_interval_seconds(span_seconds: float, time_tick_density: int) -
 
 def build_fixed_interval_locator(fixed_time_interval_seconds: int):
     return MultipleLocator(fixed_time_interval_seconds)
+
+
+def build_fixed_value_locator(fixed_value_interval: float):
+    return MultipleLocator(float(fixed_value_interval))
 
 
 def configure_matplotlib_fonts() -> None:

@@ -377,6 +377,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_density_label_var = tk.StringVar()
         self.fixed_time_interval_var = tk.StringVar()
         self.fixed_time_interval_unit_var = tk.StringVar(value="自动")
+        self.fixed_value_interval_var = tk.StringVar()
         self.timeline_zoom_factor = 1.0
         self.timeline_zoom_label_var = tk.StringVar(value="缩放 100%")
         self.timeline_status_var = tk.StringVar(value="时间轴：默认自适应窗口；可用按钮或滚轮缩放，拖动片段对齐或裁剪。")
@@ -415,6 +416,7 @@ class HWiNFOPlotterApp(tk.Tk):
             self.line_width_var,
             self.fixed_time_interval_var,
             self.fixed_time_interval_unit_var,
+            self.fixed_value_interval_var,
             self.legend_location_var,
             self.axis_color_var,
             self.grid_color_var,
@@ -842,15 +844,24 @@ class HWiNFOPlotterApp(tk.Tk):
             width=8,
         ).grid(row=0, column=1, sticky="ew", padx=(8, 0))
 
-        ttk.Checkbutton(options_frame, text="显示网格", variable=self.show_grid_var).grid(
+        ttk.Label(options_frame, text="固定数值间隔").grid(row=5, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Entry(options_frame, textvariable=self.fixed_value_interval_var).grid(
             row=5,
+            column=1,
+            columnspan=3,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        ttk.Checkbutton(options_frame, text="显示网格", variable=self.show_grid_var).grid(
+            row=6,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
         ttk.Checkbutton(options_frame, text="显示图例", variable=self.show_legend_var).grid(
-            row=5,
+            row=6,
             column=2,
             columnspan=2,
             sticky="w",
@@ -858,14 +869,14 @@ class HWiNFOPlotterApp(tk.Tk):
         )
 
         ttk.Checkbutton(options_frame, text="显示时间文字", variable=self.show_time_axis_var).grid(
-            row=6,
+            row=7,
             column=0,
             columnspan=2,
             sticky="w",
             pady=(8, 0),
         )
         ttk.Checkbutton(options_frame, text="显示数值文字", variable=self.show_value_axis_var).grid(
-            row=6,
+            row=7,
             column=2,
             columnspan=2,
             sticky="w",
@@ -873,14 +884,14 @@ class HWiNFOPlotterApp(tk.Tk):
         )
 
         ttk.Checkbutton(options_frame, text="纯曲线模式", variable=self.curve_only_mode_var).grid(
-            row=7,
+            row=8,
             column=0,
             columnspan=4,
             sticky="w",
             pady=(8, 0),
         )
 
-        ttk.Label(options_frame, text="图例位置").grid(row=8, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Label(options_frame, text="图例位置").grid(row=9, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         legend_location_box = ttk.Combobox(
             options_frame,
             textvariable=self.legend_location_var,
@@ -888,45 +899,45 @@ class HWiNFOPlotterApp(tk.Tk):
             state="readonly",
             width=10,
         )
-        legend_location_box.grid(row=8, column=1, columnspan=3, sticky="ew", pady=(8, 0))
+        legend_location_box.grid(row=9, column=1, columnspan=3, sticky="ew", pady=(8, 0))
 
         self._build_chart_color_row(
             options_frame,
-            row=9,
+            row=10,
             label_text="坐标轴颜色",
             color_var=self.axis_color_var,
             field_name="坐标轴颜色",
         )
         self._build_chart_color_row(
             options_frame,
-            row=10,
+            row=11,
             label_text="网格颜色",
             color_var=self.grid_color_var,
             field_name="网格颜色",
         )
         self._build_chart_color_row(
             options_frame,
-            row=11,
+            row=12,
             label_text="时间文字颜色",
             color_var=self.time_text_color_var,
             field_name="时间文字颜色",
         )
         self._build_chart_color_row(
             options_frame,
-            row=12,
+            row=13,
             label_text="数值文字颜色",
             color_var=self.value_text_color_var,
             field_name="数值文字颜色",
         )
         self._build_chart_color_row(
             options_frame,
-            row=13,
+            row=14,
             label_text="图例文字颜色",
             color_var=self.legend_text_color_var,
             field_name="图例文字颜色",
         )
 
-        ttk.Label(options_frame, text="字体").grid(row=14, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
+        ttk.Label(options_frame, text="字体").grid(row=15, column=0, sticky="w", pady=(8, 0), padx=(0, 8))
         ttk.Combobox(
             options_frame,
             textvariable=self.font_family_var,
@@ -934,7 +945,7 @@ class HWiNFOPlotterApp(tk.Tk):
             state="readonly",
             height=20,
         ).grid(
-            row=14,
+            row=15,
             column=1,
             columnspan=3,
             sticky="ew",
@@ -942,7 +953,7 @@ class HWiNFOPlotterApp(tk.Tk):
         )
 
         ttk.Label(options_frame, text="颜色支持 HEX 输入与取色器。").grid(
-            row=15,
+            row=16,
             column=0,
             columnspan=4,
             sticky="w",
@@ -3016,6 +3027,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.time_density_var.set(DEFAULT_TIME_TICK_DENSITY)
         self.fixed_time_interval_var.set("")
         self.fixed_time_interval_unit_var.set("自动")
+        self.fixed_value_interval_var.set("")
         self.curve_only_mode_var.set(False)
         self.show_grid_var.set(True)
         self.show_legend_var.set(True)
@@ -3233,6 +3245,7 @@ class HWiNFOPlotterApp(tk.Tk):
             legend_location=LEGEND_LOCATION_CHOICES.get(self.legend_location_var.get(), "best"),
             time_tick_density=self.parse_time_tick_density(),
             fixed_time_interval_seconds=self.parse_fixed_time_interval_seconds(),
+            fixed_value_interval=self.parse_optional_positive_float(self.fixed_value_interval_var.get(), "固定数值间隔"),
         )
         color_by_series = {
             series_key: color_text
@@ -3653,6 +3666,12 @@ class HWiNFOPlotterApp(tk.Tk):
             raise ValueError(f"{field_name} 必须大于 0。")
 
         return parsed
+
+    @classmethod
+    def parse_optional_positive_float(cls, value: str, field_name: str) -> float | None:
+        if not value.strip():
+            return None
+        return cls.parse_positive_float(value, field_name)
 
     @staticmethod
     def parse_float(value: str, field_name: str) -> float:

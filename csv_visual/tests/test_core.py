@@ -823,6 +823,34 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(axis.get_xgridlines()[0].get_color(), "#223344")
         self.assertEqual(axis.get_ygridlines()[0].get_color(), "#223344")
 
+    def test_build_figure_supports_fixed_value_interval(self) -> None:
+        column_index = next(
+            column.index
+            for column in self.data.columns
+            if len(self.data.extract_series(column.index)[1]) > 10
+        )
+
+        figure = build_figure(
+            self.data,
+            [column_index],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            style=ChartStyle(
+                fixed_value_interval=5.0,
+            ),
+        )
+        axis = figure.axes[0]
+        locator = axis.yaxis.get_major_locator()
+        tick_values = locator.tick_values(0.0, 20.0)
+        tick_diffs = [
+            tick_values[index + 1] - tick_values[index]
+            for index in range(len(tick_values) - 1)
+        ]
+
+        self.assertTrue(tick_diffs)
+        self.assertTrue(all(abs(diff - 5.0) < 1e-6 for diff in tick_diffs))
+
     def test_build_figure_applies_legend_text_color_and_font_family(self) -> None:
         column_indices = [
             column.index
@@ -1292,6 +1320,33 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(list(axis.lines[0].get_xdata()), [2.0, 3.0])
         self.assertEqual(list(axis.lines[1].get_xdata()), [5.0, 6.0])
         self.assertEqual(axis.get_xlim(), (2.0, 6.0))
+
+    def test_build_comparison_figure_supports_fixed_value_interval(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB", offset_seconds=5.0),
+        )
+
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+            style=ChartStyle(
+                fixed_value_interval=2.5,
+            ),
+        )
+        axis = figure.axes[0]
+        locator = axis.yaxis.get_major_locator()
+        tick_values = locator.tick_values(0.0, 10.0)
+        tick_diffs = [
+            tick_values[index + 1] - tick_values[index]
+            for index in range(len(tick_values) - 1)
+        ]
+
+        self.assertTrue(tick_diffs)
+        self.assertTrue(all(abs(diff - 2.5) < 1e-6 for diff in tick_diffs))
 
     def test_build_comparison_output_name_uses_aliases_and_series_names(self) -> None:
         sessions = (
