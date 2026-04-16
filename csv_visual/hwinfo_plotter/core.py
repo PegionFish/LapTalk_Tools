@@ -1411,6 +1411,9 @@ def configure_secondary_value_axis(axis, chart_style: ChartStyle) -> None:
     axis.tick_params(**tick_kwargs)
     if not chart_style.show_value_axis:
         axis.yaxis.label.set_visible(False)
+        return
+
+    add_axis_max_value_label(axis, chart_style, side="right")
 
 
 
@@ -1698,6 +1701,91 @@ def configure_axis_visibility(axis, chart_style: ChartStyle) -> None:
     apply_axis_font_family(axis, chart_style)
     axis.xaxis.get_offset_text().set_visible(False)
     axis.yaxis.get_offset_text().set_visible(False)
+    add_axis_max_value_label(axis, chart_style, side="left")
+
+
+def add_axis_max_value_label(axis, chart_style: ChartStyle, *, side: str) -> None:
+    if chart_style.curve_only_mode or not chart_style.show_value_axis:
+        return
+
+    max_value = resolve_axis_series_max_value(axis)
+    if max_value is None:
+        return
+
+    y_min, y_max = axis.get_ylim()
+    lower_bound = min(float(y_min), float(y_max))
+    upper_bound = max(float(y_min), float(y_max))
+    if max_value < lower_bound or max_value > upper_bound:
+        return
+
+    visible_ticks: list[float] = []
+    for tick_value in axis.get_yticks():
+        try:
+            numeric_tick = float(tick_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(numeric_tick):
+            continue
+        if lower_bound <= numeric_tick <= upper_bound:
+            visible_ticks.append(numeric_tick)
+
+    tolerance = max((upper_bound - lower_bound) * 0.005, 1e-6)
+    if any(abs(tick_value - max_value) <= tolerance for tick_value in visible_ticks):
+        return
+
+    label_color = chart_style.value_text_color or chart_style.axis_color or rcParams.get("ytick.color", "black")
+    font_family = normalize_font_family(chart_style.font_family)
+    horizontal_anchor = "right" if side == "left" else "left"
+    x_anchor = 0.0 if side == "left" else 1.0
+    x_offset = -8 if side == "left" else 8
+    annotation_kwargs: dict[str, object] = {
+        "xy": (x_anchor, max_value),
+        "xycoords": ("axes fraction", "data"),
+        "xytext": (x_offset, 0),
+        "textcoords": "offset points",
+        "ha": horizontal_anchor,
+        "va": "center",
+        "color": label_color,
+        "annotation_clip": False,
+        "clip_on": False,
+        "zorder": 5,
+    }
+    if font_family:
+        annotation_kwargs["fontfamily"] = font_family
+
+    axis.annotate(format_axis_max_value_label(max_value), **annotation_kwargs)
+
+
+def resolve_axis_series_max_value(axis) -> float | None:
+    max_value: float | None = None
+    for line in axis.lines:
+        for raw_value in line.get_ydata():
+            try:
+                numeric_value = float(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(numeric_value):
+                continue
+            if max_value is None or numeric_value > max_value:
+                max_value = numeric_value
+    return max_value
+
+
+def format_axis_max_value_label(value: float) -> str:
+    rounded_value = float(value)
+    if math.isclose(rounded_value, round(rounded_value), abs_tol=1e-9):
+        return str(int(round(rounded_value)))
+
+    magnitude = abs(rounded_value)
+    if magnitude >= 10:
+        precision = 1
+    elif magnitude >= 1:
+        precision = 2
+    else:
+        precision = 3
+
+    label_text = f"{rounded_value:.{precision}f}".rstrip("0").rstrip(".")
+    return "0" if label_text == "-0" else label_text
 
 
 def apply_axis_font_family(axis, chart_style: ChartStyle) -> None:

@@ -1348,6 +1348,24 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertTrue(tick_diffs)
         self.assertTrue(all(abs(diff - 2.5) < 1e-6 for diff in tick_diffs))
 
+    def test_build_comparison_figure_adds_max_value_annotation_when_top_tick_missing(self) -> None:
+        sessions = (
+            build_extrema_session("run_a", "RunA", [10.0, 89.98, 12.0], is_reference=True),
+            build_extrema_session("run_b", "RunB", [5.0, 67.4, 8.0], offset_seconds=1.0),
+        )
+
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+        )
+        axis = figure.axes[0]
+        annotation_texts = [text.get_text() for text in axis.texts]
+
+        self.assertIn("90", annotation_texts)
+
     def test_build_comparison_output_name_uses_aliases_and_series_names(self) -> None:
         sessions = (
             build_loaded_session("run_a", "RunA", is_reference=True),
