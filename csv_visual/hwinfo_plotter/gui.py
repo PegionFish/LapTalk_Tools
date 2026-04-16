@@ -1166,10 +1166,10 @@ class HWiNFOPlotterApp(tk.Tk):
         self.timeline_hscrollbar = ttk.Scrollbar(
             timeline_host,
             orient=tk.HORIZONTAL,
-            command=self.timeline_canvas.xview,
+            command=self._on_timeline_horizontal_scroll,
         )
         self.timeline_hscrollbar.grid(row=1, column=0, sticky="ew")
-        self.timeline_canvas.configure(xscrollcommand=self.timeline_hscrollbar.set)
+        self.timeline_canvas.configure(xscrollcommand=self._on_timeline_canvas_xscroll)
 
         ttk.Label(self.time_editing_module, textvariable=self.timeline_status_var).grid(row=2, column=0, sticky="w", pady=(8, 0))
 
@@ -2101,6 +2101,14 @@ class HWiNFOPlotterApp(tk.Tk):
     def _on_timeline_canvas_configure(self, _event=None) -> None:
         self.refresh_timeline()
 
+    def _on_timeline_horizontal_scroll(self, *args) -> None:
+        self.timeline_canvas.xview(*args)
+        self._update_timeline_origin_overlay()
+
+    def _on_timeline_canvas_xscroll(self, first: str, last: str) -> None:
+        self.timeline_hscrollbar.set(first, last)
+        self._update_timeline_origin_overlay()
+
     def _on_timeline_mousewheel(self, event, units: int) -> str:
         if not self.get_render_sessions():
             return "break"
@@ -2184,6 +2192,7 @@ class HWiNFOPlotterApp(tk.Tk):
                     text="添加 CSV 后，这里会显示统一时间轴。",
                 )
                 self.timeline_status_var.set("时间轴：默认自适应窗口；滚轮缩放，拖动片段对齐或裁剪。")
+                self._update_timeline_origin_overlay()
                 return
 
             metrics = self._get_timeline_metrics()
@@ -2206,6 +2215,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
             self._draw_timeline_axis(canvas, content_width, metrics)
             self._draw_timeline_sessions(canvas, render_sessions, metrics)
+            self._update_timeline_origin_overlay()
 
             selected_count = len(self.get_selected_session_ids())
             self.timeline_status_var.set(
@@ -2356,6 +2366,41 @@ class HWiNFOPlotterApp(tk.Tk):
             self.timeline_hit_regions[body_id] = ("move_clip", session.session_id)
             self.timeline_hit_regions[left_handle_id] = ("trim_left", session.session_id)
             self.timeline_hit_regions[right_handle_id] = ("trim_right", session.session_id)
+
+    def _update_timeline_origin_overlay(self) -> None:
+        if not hasattr(self, "timeline_canvas"):
+            return
+        if not self.timeline_canvas.winfo_exists():
+            return
+
+        canvas = self.timeline_canvas
+        canvas.delete("timeline_origin_overlay")
+        if not self.get_render_sessions():
+            return
+
+        viewport_left_x = float(canvas.canvasx(0.0))
+        badge_left_x = viewport_left_x + 8.0
+        badge_top_y = 6.0
+        badge_right_x = badge_left_x + 88.0
+        badge_bottom_y = badge_top_y + 20.0
+        canvas.create_rectangle(
+            badge_left_x,
+            badge_top_y,
+            badge_right_x,
+            badge_bottom_y,
+            fill="#eef3ff",
+            outline="#9fb7e6",
+            tags=("timeline_origin_overlay",),
+        )
+        canvas.create_text(
+            (badge_left_x + badge_right_x) / 2.0,
+            (badge_top_y + badge_bottom_y) / 2.0,
+            text="原点 00:00",
+            fill="#35528a",
+            font=("Segoe UI", 9, "bold"),
+            tags=("timeline_origin_overlay",),
+        )
+        canvas.tag_raise("timeline_origin_overlay")
 
     def _timeline_seconds_to_x(self, seconds: float, metrics: dict[str, float] | None = None) -> float:
         resolved_metrics = metrics or self._get_timeline_metrics()
