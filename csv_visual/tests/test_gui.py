@@ -291,6 +291,20 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_file_management_actions_do_not_offer_reference_button(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            button_texts = [
+                child.cget("text")
+                for child in app.file_management_module.winfo_children()[1].winfo_children()
+                if child.winfo_class() == "TButton"
+            ]
+
+            self.assertEqual(button_texts, ["添加 CSV...", "移除选中", "清空全部"])
+            self.assertFalse(hasattr(app, "set_selected_session_as_reference"))
+        finally:
+            app.on_close()
+
     def test_timeline_toolbar_uses_reset_buttons_without_work_area_button(self) -> None:
         app = HWiNFOPlotterApp()
         try:
@@ -588,8 +602,7 @@ class GuiBehaviorTests(unittest.TestCase):
             self.assertEqual(mock_load.call_count, 2)
             self.assertEqual(mock_preload.call_count, 2)
             self.assertEqual(len(app.sessions), 2)
-            self.assertTrue(app.sessions[0].is_reference)
-            self.assertFalse(app.sessions[1].is_reference)
+            self.assertEqual([session.is_reference for session in app.sessions], [False, False])
             self.assertEqual(
                 app.column_listbox.get(0, "end"),
                 ("[002] CPU", "[003] GPU"),
@@ -827,7 +840,7 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_set_selected_session_as_reference_normalizes_offsets(self) -> None:
+    def test_remove_selected_sessions_keeps_remaining_offsets_independent(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
@@ -835,14 +848,17 @@ class GuiBehaviorTests(unittest.TestCase):
                 build_session("run_a", "RunA", is_reference=True),
                 build_session("run_b", "RunB", offset_seconds=8.0, base_value=5.0),
             ]
-            app.refresh_session_tree(preferred_selection=["run_b"])
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
 
-            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
-                app.set_selected_session_as_reference()
+            app.remove_selected_sessions()
 
-            self.assertEqual([session.offset_seconds for session in app.sessions], [-8.0, 0.0])
-            self.assertEqual([session.is_reference for session in app.sessions], [False, True])
-            mock_refresh.assert_called_once_with(immediate=True)
+            self.assertEqual([session.session_id for session in app.sessions], ["run_b"])
+            self.assertEqual([session.offset_seconds for session in app.sessions], [8.0])
+            self.assertEqual([session.is_reference for session in app.sessions], [False])
         finally:
             app.on_close()
 

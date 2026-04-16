@@ -41,7 +41,6 @@ from .core import (
     format_compact_elapsed_time,
     group_aligned_extrema,
     list_available_font_families,
-    normalize_offsets_for_reference,
     render_figure_png_bytes,
     resolve_session_source_trim_range,
     save_figure,
@@ -640,12 +639,11 @@ class HWiNFOPlotterApp(tk.Tk):
 
         file_button_row = ttk.Frame(self.file_management_module)
         file_button_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        file_button_row.columnconfigure((0, 1, 2, 3), weight=1)
+        file_button_row.columnconfigure((0, 1, 2), weight=1)
 
         ttk.Button(file_button_row, text="添加 CSV...", command=self.browse_csv).grid(row=0, column=0, sticky="ew", padx=(0, 4))
         ttk.Button(file_button_row, text="移除选中", command=self.remove_selected_sessions).grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(file_button_row, text="清空全部", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=4)
-        ttk.Button(file_button_row, text="设为基准", command=self.set_selected_session_as_reference).grid(row=0, column=3, sticky="ew", padx=(4, 0))
+        ttk.Button(file_button_row, text="清空全部", command=self.clear_all_sessions).grid(row=0, column=2, sticky="ew", padx=(4, 0))
 
         session_alias_row = ttk.Frame(self.file_management_module)
         session_alias_row.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -1548,10 +1546,7 @@ class HWiNFOPlotterApp(tk.Tk):
         self.detected_extrema_groups = group_aligned_extrema(
             detected_extrema,
             alignment_tolerance_seconds=extrema_config.alignment_tolerance_seconds,
-            reference_session_id=next(
-                (session.session_id for session in self.get_render_sessions() if session.is_reference),
-                None,
-            ),
+            reference_session_id=None,
         )
         valid_point_keys = {
             ExtremaPointKey(group.group_id, member.key)
@@ -1791,15 +1786,12 @@ class HWiNFOPlotterApp(tk.Tk):
                 session_id=self._build_session_id(),
                 alias=data.source_path.stem,
                 data=data,
-                is_reference=not self.sessions and not new_sessions,
             )
             new_sessions.append(new_session)
             existing_paths[normalized_path] = new_session.session_id
 
         if new_sessions:
             self.sessions.extend(new_sessions)
-            if not any(session.is_reference for session in self.sessions):
-                self.sessions = list(normalize_offsets_for_reference(self.sessions, self.sessions[0].session_id))
 
             for session in new_sessions:
                 self.start_background_preload(session)
@@ -1853,9 +1845,6 @@ class HWiNFOPlotterApp(tk.Tk):
             if series_key.session_id not in selected_session_ids
         }
 
-        if self.sessions and not any(session.is_reference for session in self.sessions):
-            self.sessions = list(normalize_offsets_for_reference(self.sessions, self.sessions[0].session_id))
-
         if not self.sessions:
             self.cancel_pending_preview_requests()
             self.cancel_pending_preload_requests()
@@ -1892,25 +1881,6 @@ class HWiNFOPlotterApp(tk.Tk):
         )
         self.clear_preview()
         self.status_var.set("请添加一个或多个 HWiNFO CSV 文件。")
-
-    def set_selected_session_as_reference(self) -> None:
-        selected_session = self.get_selected_session()
-        if selected_session is None:
-            messagebox.showinfo("未选择文件", "请在文件列表中选中一个 CSV 文件并将其设为基准。")
-            return
-
-        self.sessions = list(normalize_offsets_for_reference(self.sessions, selected_session.session_id))
-        self.refresh_after_session_change(
-            preferred_selection=[selected_session.session_id],
-            preserve_trim_range=True,
-            reason="set_selected_session_as_reference",
-        )
-        logger.info(
-            "Set selected session as reference session_id=%s alias=%s",
-            selected_session.session_id,
-            selected_session.alias,
-        )
-        self.status_var.set(f"已将 {selected_session.alias} 设为基准文件。")
 
     def apply_selected_session_alias(self, _event=None) -> str | None:
         if self._updating_session_editor:
@@ -2321,7 +2291,7 @@ class HWiNFOPlotterApp(tk.Tk):
             active_right_x = self._timeline_seconds_to_x(active_end_seconds, metrics)
             handle_width = metrics["handle_width"]
             is_selected = session.session_id in selected_session_ids
-            clip_fill = "#7ea7ff" if not session.is_reference else "#78b56d"
+            clip_fill = "#7ea7ff"
             clip_outline = "#1f4aa8" if is_selected else "#5578be"
 
             canvas.create_text(
@@ -2375,8 +2345,6 @@ class HWiNFOPlotterApp(tk.Tk):
                 outline="",
             )
             label_text = session.data.source_path.name
-            if session.is_reference:
-                label_text = f"{label_text}  [基准]"
             canvas.create_text(
                 active_left_x + 8,
                 clip_top + metrics["clip_height"] / 2,
