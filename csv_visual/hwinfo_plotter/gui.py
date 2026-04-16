@@ -81,6 +81,10 @@ WINDOWS_DRAG_QUERY_ALL_FILES = 0xFFFFFFFF
 WINDOWS_LRESULT = getattr(wintypes, "LRESULT", ctypes.c_ssize_t)
 WINDOWS_UINT_PTR = ctypes.c_size_t
 WINDOWS_DWORD_PTR = ctypes.c_size_t
+MIN_TIMELINE_ZOOM_FACTOR = 1.0
+MAX_TIMELINE_ZOOM_FACTOR = 32.0
+TIMELINE_BUTTON_ZOOM_MULTIPLIER = 1.25
+TIMELINE_WHEEL_ZOOM_MULTIPLIER = 1.12
 
 
 class WindowsFileDropManager:
@@ -374,7 +378,8 @@ class HWiNFOPlotterApp(tk.Tk):
         self.fixed_time_interval_var = tk.StringVar()
         self.fixed_time_interval_unit_var = tk.StringVar(value="自动")
         self.timeline_zoom_factor = 1.0
-        self.timeline_status_var = tk.StringVar(value="时间轴：默认自适应窗口；滚轮缩放，拖动片段对齐或裁剪。")
+        self.timeline_zoom_label_var = tk.StringVar(value="缩放 100%")
+        self.timeline_status_var = tk.StringVar(value="时间轴：默认自适应窗口；可用按钮或滚轮缩放，拖动片段对齐或裁剪。")
         self.timeline_pixels_per_second = 12.0
         self.timeline_start_seconds = 0.0
         self.timeline_end_seconds = 60.0
@@ -1132,17 +1137,24 @@ class HWiNFOPlotterApp(tk.Tk):
 
         ttk.Label(
             toolbar,
-            text="时间轴默认自适应窗口；在时间轴上滚动鼠标滚轮可缩放细调。",
+            text="时间轴默认自适应窗口；可用按钮或滚轮缩放细调。",
         ).grid(row=0, column=0, sticky="w")
-        ttk.Button(toolbar, text="重置所选对齐", command=self.reset_selected_session_offsets).grid(
+        ttk.Label(toolbar, textvariable=self.timeline_zoom_label_var).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        ttk.Button(toolbar, text="缩小", command=self.zoom_out_timeline).grid(
             row=0,
-            column=1,
+            column=2,
             sticky="ew",
             padx=(8, 0),
         )
-        ttk.Button(toolbar, text="重置所选裁剪", command=self.reset_selected_session_source_trims).grid(
+        ttk.Button(toolbar, text="放大", command=self.zoom_in_timeline).grid(
             row=0,
-            column=2,
+            column=3,
+            sticky="ew",
+            padx=(8, 0),
+        )
+        ttk.Button(toolbar, text="重置时间轴", command=self.reset_timeline_to_default).grid(
+            row=0,
+            column=4,
             sticky="ew",
             padx=(8, 0),
         )
@@ -2114,17 +2126,50 @@ class HWiNFOPlotterApp(tk.Tk):
         if not self.get_render_sessions():
             return "break"
 
-        zoom_multiplier = 1.12 if units < 0 else 1 / 1.12
-        updated_zoom_factor = min(8.0, max(1.0, self.timeline_zoom_factor * zoom_multiplier))
-        if abs(updated_zoom_factor - self.timeline_zoom_factor) < 1e-9:
-            return "break"
-
-        anchor_canvas_x = self.timeline_canvas.canvasx(event.x)
-        anchor_seconds = self._timeline_x_to_seconds(anchor_canvas_x)
-        self.timeline_zoom_factor = updated_zoom_factor
-        self.refresh_timeline()
-        self._restore_timeline_anchor(anchor_seconds, event.x)
+        zoom_multiplier = TIMELINE_WHEEL_ZOOM_MULTIPLIER if units < 0 else 1 / TIMELINE_WHEEL_ZOOM_MULTIPLIER
+        self.adjust_timeline_zoom(zoom_multiplier, anchor_viewport_x=float(event.x))
         return "break"
+
+    @staticmethod
+    def _clamp_timeline_zoom_factor(value: float) -> float:
+        return min(MAX_TIMELINE_ZOOM_FACTOR, max(MIN_TIMELINE_ZOOM_FACTOR, float(value)))
+
+    def update_timeline_zoom_label(self) -> None:
+        zoom_percent = int(round(float(self.timeline_zoom_factor) * 100))
+        self.timeline_zoom_label_var.set(f"缩放 {zoom_percent}%")
+
+    def set_timeline_zoom_factor(self, zoom_factor: float, *, anchor_viewport_x: float | None = None) -> bool:
+        updated_zoom_factor = self._clamp_timeline_zoom_factor(zoom_factor)
+        if abs(updated_zoom_factor - self.timeline_zoom_factor) < 1e-9:
+            self.update_timeline_zoom_label()
+            return False
+
+        resolved_anchor_viewport_x = anchor_viewport_x
+        anchor_seconds: float | None = None
+        if self.get_render_sessions() and hasattr(self, "timeline_canvas") and self.timeline_canvas.winfo_exists():
+            if resolved_anchor_viewport_x is None:
+                resolved_anchor_viewport_x = max(float(self.timeline_canvas.winfo_width()), 1.0) / 2.0
+            anchor_canvas_x = self.timeline_canvas.canvasx(resolved_anchor_viewport_x)
+            anchor_seconds = self._timeline_x_to_seconds(anchor_canvas_x)
+
+        self.timeline_zoom_factor = updated_zoom_factor
+        self.update_timeline_zoom_label()
+        self.refresh_timeline()
+        if anchor_seconds is not None and resolved_anchor_viewport_x is not None:
+            self._restore_timeline_anchor(anchor_seconds, resolved_anchor_viewport_x)
+        return True
+
+    def adjust_timeline_zoom(self, multiplier: float, *, anchor_viewport_x: float | None = None) -> bool:
+        return self.set_timeline_zoom_factor(
+            self.timeline_zoom_factor * float(multiplier),
+            anchor_viewport_x=anchor_viewport_x,
+        )
+
+    def zoom_in_timeline(self) -> None:
+        self.adjust_timeline_zoom(TIMELINE_BUTTON_ZOOM_MULTIPLIER)
+
+    def zoom_out_timeline(self) -> None:
+        self.adjust_timeline_zoom(1 / TIMELINE_BUTTON_ZOOM_MULTIPLIER)
 
     def _restore_timeline_anchor(self, anchor_seconds: float, viewport_x: float) -> None:
         if not self.get_render_sessions():
@@ -2183,6 +2228,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
         self._refreshing_timeline = True
         try:
+            self.update_timeline_zoom_label()
             canvas = self.timeline_canvas
             canvas.delete("all")
             self.timeline_clip_item_by_session_id.clear()
@@ -2198,7 +2244,7 @@ class HWiNFOPlotterApp(tk.Tk):
                     fill="#5f6b7a",
                     text="添加 CSV 后，这里会显示统一时间轴。",
                 )
-                self.timeline_status_var.set("时间轴：默认自适应窗口；滚轮缩放，拖动片段对齐或裁剪。")
+                self.timeline_status_var.set("时间轴：默认自适应窗口；可用按钮或滚轮缩放，拖动片段对齐或裁剪。")
                 self._update_timeline_origin_overlay()
                 return
 
@@ -2226,7 +2272,7 @@ class HWiNFOPlotterApp(tk.Tk):
 
             selected_count = len(self.get_selected_session_ids())
             self.timeline_status_var.set(
-                f"时间轴：{len(render_sessions)} 个文件，当前选中 {selected_count} 个；默认自适应窗口，滚轮可缩放细调。"
+                f"时间轴：{len(render_sessions)} 个文件，当前选中 {selected_count} 个；当前缩放 {int(round(self.timeline_zoom_factor * 100))}%，可用按钮或滚轮继续细调。"
             )
         finally:
             self._refreshing_timeline = False
@@ -2596,39 +2642,33 @@ class HWiNFOPlotterApp(tk.Tk):
         self.timeline_preview_after_id = None
         self.schedule_preview_refresh(immediate=True)
 
-    def reset_selected_session_offsets(self) -> None:
-        target_session_ids = self.get_selected_session_ids() or tuple(session.session_id for session in self.get_render_sessions())
-        updated_session_by_id = {}
-        for session_id in target_session_ids:
-            session = self.get_session_by_id(session_id)
-            if session is None:
-                continue
-            updated_session_by_id[session_id] = replace(session, offset_seconds=0.0)
-        if not updated_session_by_id:
-            return
+    def reset_timeline_to_default(self) -> None:
+        preferred_selection = list(self.get_selected_session_ids())
+        self.timeline_drag_state = None
+        self.timeline_zoom_factor = MIN_TIMELINE_ZOOM_FACTOR
+        self.update_timeline_zoom_label()
 
-        self._apply_timeline_session_updates(updated_session_by_id)
-        self.schedule_preview_refresh(immediate=True)
-        self.status_var.set("已重置所选文件的偏移。")
-
-    def reset_selected_session_source_trims(self) -> None:
-        target_session_ids = self.get_selected_session_ids() or tuple(session.session_id for session in self.get_render_sessions())
-        updated_session_by_id = {}
-        for session_id in target_session_ids:
-            session = self.get_session_by_id(session_id)
-            if session is None:
-                continue
-            updated_session_by_id[session_id] = replace(
-                session,
-                source_trim_start_seconds=0.0,
-                source_trim_end_seconds=None,
+        if self.sessions:
+            self.sessions = [
+                replace(
+                    session,
+                    offset_seconds=0.0,
+                    source_trim_start_seconds=0.0,
+                    source_trim_end_seconds=None,
+                )
+                for session in self.sessions
+            ]
+            self.refresh_after_session_change(
+                preferred_selection=preferred_selection,
+                preserve_trim_range=False,
+                reason="reset_timeline_to_default",
             )
-        if not updated_session_by_id:
-            return
+        else:
+            self.refresh_timeline()
 
-        self._apply_timeline_session_updates(updated_session_by_id)
-        self.schedule_preview_refresh(immediate=True)
-        self.status_var.set("已重置所选文件的有效片段。")
+        self.timeline_canvas.xview_moveto(0.0)
+        self._update_timeline_origin_overlay()
+        self.status_var.set("已彻底重置时间轴：偏移、裁剪和缩放均已恢复默认。")
 
     def browse_csv(self) -> None:
         file_paths = filedialog.askopenfilenames(

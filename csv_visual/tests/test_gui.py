@@ -324,7 +324,7 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_timeline_toolbar_uses_reset_buttons_without_work_area_button(self) -> None:
+    def test_timeline_toolbar_uses_reset_and_zoom_buttons_without_work_area_button(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             button_texts = [
@@ -333,7 +333,7 @@ class GuiBehaviorTests(unittest.TestCase):
                 if child.winfo_class() == "TButton"
             ]
 
-            self.assertEqual(button_texts, ["重置所选对齐", "重置所选裁剪"])
+            self.assertEqual(button_texts, ["缩小", "放大", "重置时间轴"])
         finally:
             app.on_close()
 
@@ -358,6 +358,69 @@ class GuiBehaviorTests(unittest.TestCase):
 
             self.assertAlmostEqual(app.timeline_zoom_factor, 1.0)
             self.assertAlmostEqual(app.timeline_pixels_per_second, expected_pixels_per_second, places=4)
+        finally:
+            app.on_close()
+
+    def test_zoom_in_button_increases_timeline_zoom_factor(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+            before_zoom_factor = app.timeline_zoom_factor
+
+            app.zoom_in_timeline()
+
+            self.assertGreater(app.timeline_zoom_factor, before_zoom_factor)
+            self.assertEqual(app.timeline_zoom_label_var.get(), "缩放 125%")
+        finally:
+            app.on_close()
+
+    def test_zoom_out_button_decreases_timeline_zoom_factor(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.timeline_zoom_factor = 2.0
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            app.zoom_out_timeline()
+
+            self.assertLess(app.timeline_zoom_factor, 2.0)
+            self.assertGreaterEqual(app.timeline_zoom_factor, 1.0)
+            self.assertEqual(app.timeline_zoom_label_var.get(), "缩放 160%")
+        finally:
+            app.on_close()
+
+    def test_timeline_zoom_supports_precision_beyond_previous_limit(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            for _ in range(10):
+                app.zoom_in_timeline()
+
+            self.assertGreater(app.timeline_zoom_factor, 8.0)
         finally:
             app.on_close()
 
@@ -424,6 +487,53 @@ class GuiBehaviorTests(unittest.TestCase):
 
             self.assertEqual(result, "break")
             self.assertGreater(app.timeline_zoom_factor, before_zoom_factor)
+        finally:
+            app.on_close()
+
+    def test_reset_timeline_button_restores_default_offsets_trims_zoom_and_scroll(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session(
+                    "run_a",
+                    "RunA",
+                    offset_seconds=3.0,
+                    is_reference=True,
+                    source_trim_start_seconds=1.0,
+                    source_trim_end_seconds=2.0,
+                ),
+                build_session(
+                    "run_b",
+                    "RunB",
+                    offset_seconds=-2.0,
+                    base_value=5.0,
+                    source_trim_start_seconds=1.0,
+                    source_trim_end_seconds=2.0,
+                ),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.timeline_zoom_factor = 4.0
+            app.update_idletasks()
+            app.refresh_timeline()
+            app._on_timeline_horizontal_scroll("moveto", 1.0)
+
+            self.assertGreater(app.timeline_canvas.xview()[0], 0.0)
+
+            with patch.object(app, "schedule_preview_refresh") as mock_refresh:
+                app.reset_timeline_to_default()
+
+            self.assertEqual([session.offset_seconds for session in app.sessions], [0.0, 0.0])
+            self.assertEqual([session.source_trim_start_seconds for session in app.sessions], [0.0, 0.0])
+            self.assertEqual([session.source_trim_end_seconds for session in app.sessions], [None, None])
+            self.assertEqual(app.timeline_zoom_factor, 1.0)
+            self.assertEqual(app.timeline_zoom_label_var.get(), "缩放 100%")
+            self.assertEqual(app.timeline_canvas.xview()[0], 0.0)
+            mock_refresh.assert_called_once_with(immediate=True)
         finally:
             app.on_close()
 
