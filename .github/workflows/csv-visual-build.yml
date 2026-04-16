@@ -66,8 +66,8 @@ jobs:
         with:
           name: HWiNFO-CSV-Plotter-windows-${{ github.run_number }}
           path: |
-            csv_visual/dist/HWiNFO-CSV-Plotter.exe
-            csv_visual/dist/HWiNFO-CSV-Plotter/**
+            csv_visual/dist/HWiNFO-CSV-Plotter-*.exe
+            csv_visual/dist/HWiNFO-CSV-Plotter-*/**
           if-no-files-found: error
           retention-days: 14
 
@@ -75,9 +75,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         working-directory: csv_visual
         run: |
-          $assetPath = ".\dist\HWiNFO-CSV-Plotter.exe"
-          $hash = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  HWiNFO-CSV-Plotter.exe" | Set-Content -Encoding utf8 .\dist\HWiNFO-CSV-Plotter.exe.sha256
+          $asset = Get-ChildItem -Path .\dist -Filter "HWiNFO-CSV-Plotter-*.exe" -File | Select-Object -First 1
+          if (-not $asset) {
+              throw "Built EXE was not found in .\\dist."
+          }
+          $hash = (Get-FileHash $asset.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($asset.Name)" | Set-Content -Encoding utf8 "$($asset.FullName).sha256"
 
       - name: Attach assets to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -85,5 +88,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            csv_visual/dist/HWiNFO-CSV-Plotter.exe
-            csv_visual/dist/HWiNFO-CSV-Plotter.exe.sha256
+            csv_visual/dist/HWiNFO-CSV-Plotter-*.exe
+            csv_visual/dist/HWiNFO-CSV-Plotter-*.exe.sha256

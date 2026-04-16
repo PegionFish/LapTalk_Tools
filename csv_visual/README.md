@@ -135,7 +135,7 @@ workflow 会在 `windows-latest` 上安装 `requirements.txt` 依赖，先运行
 python .\build_exe.py
 ```
 
-构建完成后，可在该次 workflow run 的 `Artifacts` 中下载 `HWiNFO-CSV-Plotter-windows-<run_number>`。手动运行时可选择 `onefile` 或 `onedir` 输出模式；默认是单文件 EXE。打包脚本会在构建时写入当前 Git Hash，并把 `about.md` 打入 EXE，应用内“关于”窗口的 `Version` 会随打包提交自动变化。
+构建完成后，可在该次 workflow run 的 `Artifacts` 中下载 `HWiNFO-CSV-Plotter-windows-<run_number>`。手动运行时可选择 `onefile` 或 `onedir` 输出模式；默认是单文件 EXE。打包脚本会在构建时写入当前 Git Hash，并把 `about.md` 打入 EXE；输出文件 / 目录名也会自动追加对应的 `7` 位短 Git Hash，例如 `HWiNFO-CSV-Plotter-25433f8.exe`，应用内“关于”窗口的 `Version` 会随打包提交自动变化。
 
 ### 本地打包
 
@@ -155,7 +155,7 @@ python .\build_exe.py
 3. 默认产物位于：
 
 ```text
-csv_visual\dist\HWiNFO-CSV-Plotter.exe
+csv_visual\dist\HWiNFO-CSV-Plotter-<short_hash>.exe
 ```
 
 4. 如需生成目录模式而不是单文件 EXE，可执行：
