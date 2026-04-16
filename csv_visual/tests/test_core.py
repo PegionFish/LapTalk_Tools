@@ -1077,6 +1077,53 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(list(visible_series[0].x_values), [6.0, 7.0])
         self.assertEqual(list(visible_series[0].y_values), [2.0, 3.0])
 
+    def test_build_comparison_figure_hides_trimmed_segment_for_single_session(self) -> None:
+        session = build_loaded_session(
+            "run_a",
+            "RunA",
+            offset_seconds=5.0,
+            source_trim_start_seconds=1.0,
+            source_trim_end_seconds=2.0,
+        )
+
+        figure = build_comparison_figure(
+            (session,),
+            [SeriesKey("run_a", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+        )
+        axis = figure.axes[0]
+
+        self.assertEqual(list(axis.lines[0].get_xdata()), [6.0, 7.0])
+        self.assertEqual(list(axis.lines[0].get_ydata()), [2.0, 3.0])
+
+    def test_build_comparison_figure_hides_only_trimmed_segment_for_target_session(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session(
+                "run_b",
+                "RunB",
+                offset_seconds=5.0,
+                source_trim_start_seconds=1.0,
+                source_trim_end_seconds=2.0,
+            ),
+        )
+
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+        )
+        axis = figure.axes[0]
+        line_x_values = [list(line.get_xdata()) for line in axis.lines]
+
+        self.assertIn([0.0, 1.0, 2.0, 3.0], line_x_values)
+        self.assertIn([6.0, 7.0], line_x_values)
+        self.assertNotIn([5.0, 6.0, 7.0, 8.0], line_x_values)
+
     def test_source_trim_and_global_work_area_both_apply_to_comparison_series(self) -> None:
         session = build_loaded_session(
             "run_a",

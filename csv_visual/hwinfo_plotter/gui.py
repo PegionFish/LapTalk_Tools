@@ -2198,20 +2198,7 @@ class HWiNFOPlotterApp(tk.Tk):
         if not render_sessions:
             return 0.0, 60.0
 
-        display_shift_seconds = compute_display_shift_seconds(render_sessions, include_full_ranges=True)
-        end_candidates: list[float] = []
-        for session in render_sessions:
-            _full_start_seconds, full_end_seconds = compute_session_timeline_range(session)
-            _active_start_seconds, active_end_seconds = compute_session_active_timeline_range(session)
-            end_candidates.extend(
-                (
-                    float(full_end_seconds) + display_shift_seconds,
-                    float(active_end_seconds) + display_shift_seconds,
-                )
-            )
-
-        start_seconds = 0.0
-        end_seconds = max(end_candidates)
+        start_seconds, end_seconds = compute_global_time_bounds(render_sessions)
         if end_seconds <= start_seconds:
             end_seconds = start_seconds + 1.0
 
@@ -2340,7 +2327,7 @@ class HWiNFOPlotterApp(tk.Tk):
         metrics: dict[str, float],
     ) -> None:
         selected_session_ids = set(self.get_selected_session_ids())
-        display_shift_seconds = compute_display_shift_seconds(render_sessions, include_full_ranges=True)
+        display_shift_seconds = compute_display_shift_seconds(render_sessions)
         for row_index, session in enumerate(render_sessions):
             row_top = metrics["tracks_top"] + row_index * metrics["track_row_height"]
             clip_top = row_top + 9

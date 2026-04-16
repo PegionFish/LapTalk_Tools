@@ -361,6 +361,64 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_timeline_bounds_follow_active_trim_range_instead_of_full_duration(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session(
+                    "run_a",
+                    "RunA",
+                    offset_seconds=-3.0,
+                    is_reference=True,
+                    source_trim_start_seconds=2.0,
+                    source_trim_end_seconds=3.0,
+                )
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            self.assertEqual(app.timeline_start_seconds, 0.0)
+            self.assertEqual(app.timeline_end_seconds, 3.0)
+        finally:
+            app.on_close()
+
+    def test_timeline_active_clip_aligns_to_zero_based_trimmed_range(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session(
+                    "run_a",
+                    "RunA",
+                    offset_seconds=-3.0,
+                    is_reference=True,
+                    source_trim_start_seconds=2.0,
+                    source_trim_end_seconds=3.0,
+                )
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+
+            metrics = app._get_timeline_metrics()
+            body_id = app.timeline_clip_item_by_session_id["run_a"]
+            body_bbox = app.timeline_canvas.bbox(body_id)
+
+            self.assertIsNotNone(body_bbox)
+            self.assertLessEqual(abs(body_bbox[0] - int(metrics["left_gutter"])), 1)
+        finally:
+            app.on_close()
+
     def test_zoom_in_button_increases_timeline_zoom_factor(self) -> None:
         app = HWiNFOPlotterApp()
         try:
