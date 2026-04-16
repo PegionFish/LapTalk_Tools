@@ -1917,7 +1917,7 @@ class HWiNFOPlotterApp(tk.Tk):
             return None
 
         try:
-            offset_seconds = self.parse_float(self.session_offset_var.get(), "偏移(秒)")
+            offset_seconds = self.parse_nonnegative_float(self.session_offset_var.get(), "偏移(秒)")
         except ValueError as exc:
             messagebox.showerror("偏移格式无效", str(exc))
             self.sync_session_editor()
@@ -1959,7 +1959,7 @@ class HWiNFOPlotterApp(tk.Tk):
             return
 
         self.session_offset_var.set(
-            self.format_offset_seconds(float(selected_session.offset_seconds) + float(delta_seconds))
+            self.format_offset_seconds(max(0.0, float(selected_session.offset_seconds) + float(delta_seconds)))
         )
         self.apply_selected_session_details()
 
@@ -2144,21 +2144,19 @@ class HWiNFOPlotterApp(tk.Tk):
         if not render_sessions:
             return 0.0, 60.0
 
-        start_candidates: list[float] = []
         end_candidates: list[float] = []
         for session in render_sessions:
-            full_start_seconds, full_end_seconds = compute_session_timeline_range(session)
-            active_start_seconds, active_end_seconds = compute_session_active_timeline_range(session)
-            start_candidates.extend((full_start_seconds, active_start_seconds))
+            _full_start_seconds, full_end_seconds = compute_session_timeline_range(session)
+            _active_start_seconds, active_end_seconds = compute_session_active_timeline_range(session)
             end_candidates.extend((full_end_seconds, active_end_seconds))
 
-        start_seconds = min(start_candidates)
+        start_seconds = 0.0
         end_seconds = max(end_candidates)
         if end_seconds <= start_seconds:
             end_seconds = start_seconds + 1.0
 
         padding_seconds = max(2.0, (end_seconds - start_seconds) * 0.05)
-        return float(start_seconds - padding_seconds), float(end_seconds + padding_seconds)
+        return float(start_seconds), float(end_seconds + padding_seconds)
 
     def refresh_timeline(self) -> None:
         if not hasattr(self, "timeline_canvas"):
@@ -2445,6 +2443,23 @@ class HWiNFOPlotterApp(tk.Tk):
         )
 
         if action == "move_clip":
+            minimum_delta_seconds = None
+            for session_id in self.timeline_drag_state["session_ids"]:
+                session = self.get_session_by_id(session_id)
+                if session is None:
+                    continue
+                start_offset_seconds = float(
+                    self.timeline_drag_state["start_offsets"].get(session_id, session.offset_seconds)
+                )
+                minimum_offset_seconds = self._resolve_session_minimum_offset_seconds(session)
+                candidate_minimum_delta_seconds = minimum_offset_seconds - start_offset_seconds
+                if minimum_delta_seconds is None:
+                    minimum_delta_seconds = candidate_minimum_delta_seconds
+                else:
+                    minimum_delta_seconds = max(minimum_delta_seconds, candidate_minimum_delta_seconds)
+            if minimum_delta_seconds is not None:
+                delta_seconds = max(delta_seconds, float(minimum_delta_seconds))
+
             updated_session_by_id: dict[str, LoadedCsvSession] = {}
             for session_id in self.timeline_drag_state["session_ids"]:
                 session = self.get_session_by_id(session_id)
@@ -2453,7 +2468,10 @@ class HWiNFOPlotterApp(tk.Tk):
                 start_offset_seconds = self.timeline_drag_state["start_offsets"].get(session_id, session.offset_seconds)
                 updated_session_by_id[session_id] = replace(
                     session,
-                    offset_seconds=float(start_offset_seconds) + delta_seconds,
+                    offset_seconds=max(
+                        self._resolve_session_minimum_offset_seconds(session),
+                        float(start_offset_seconds) + delta_seconds,
+                    ),
                 )
             if updated_session_by_id:
                 self._apply_timeline_session_updates(updated_session_by_id)
@@ -2522,13 +2540,27 @@ class HWiNFOPlotterApp(tk.Tk):
     def _apply_timeline_session_updates(self, updated_session_by_id: dict[str, LoadedCsvSession]) -> None:
         preferred_selection = list(self.get_selected_session_ids()) or list(updated_session_by_id)
         self.sessions = [
-            updated_session_by_id.get(session.session_id, session)
+            self._clamp_session_offset(updated_session_by_id.get(session.session_id, session))
             for session in self.sessions
         ]
         self.refresh_session_tree(preferred_selection=preferred_selection)
         self.refresh_extrema_source_options()
         self.refresh_extrema_groups()
         self.configure_trim_controls(preserve_range=True)
+
+    @staticmethod
+    def _resolve_session_minimum_offset_seconds(session: LoadedCsvSession) -> float:
+        if not session.data.elapsed_seconds:
+            return 0.0
+        return max(0.0, -float(session.data.elapsed_seconds[0]))
+
+    @classmethod
+    def _clamp_session_offset(cls, session: LoadedCsvSession) -> LoadedCsvSession:
+        minimum_offset_seconds = cls._resolve_session_minimum_offset_seconds(session)
+        clamped_offset_seconds = max(minimum_offset_seconds, float(session.offset_seconds))
+        if abs(clamped_offset_seconds - float(session.offset_seconds)) < 1e-9:
+            return session
+        return replace(session, offset_seconds=clamped_offset_seconds)
 
     def _schedule_timeline_preview_refresh(self, *, immediate: bool = False) -> None:
         if self.timeline_preview_after_id is not None:

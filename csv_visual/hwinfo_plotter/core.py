@@ -252,7 +252,7 @@ def compute_global_time_bounds(sessions: Sequence[LoadedCsvSession]) -> tuple[fl
         return 0.0, 1.0
 
     active_ranges = [compute_session_active_timeline_range(session) for session in visible_sessions]
-    start_seconds = min(active_start_seconds for active_start_seconds, _ in active_ranges)
+    start_seconds = 0.0
     end_seconds = max(active_end_seconds for _, active_end_seconds in active_ranges)
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 1.0

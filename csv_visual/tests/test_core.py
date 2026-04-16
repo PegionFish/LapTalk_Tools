@@ -319,10 +319,10 @@ class ExtremaCoreTests(unittest.TestCase):
             [11, 20],
         )
 
-    def test_detected_extrema_group_after_offset_alignment(self) -> None:
+    def test_detected_extrema_group_after_positive_offset_alignment(self) -> None:
         sessions = (
-            build_extrema_session("run_a", "RunA", [0.0, 5.0, 0.0, 0.0], is_reference=True),
-            build_extrema_session("run_b", "RunB", [0.0, 0.0, 5.0, 0.0], offset_seconds=-1.0),
+            build_extrema_session("run_a", "RunA", [0.0, 5.0, 0.0, 0.0], is_reference=True, offset_seconds=1.0),
+            build_extrema_session("run_b", "RunB", [0.0, 0.0, 5.0, 0.0]),
         )
         config = ExtremaDetectionConfig(
             enabled=True,
@@ -341,9 +341,9 @@ class ExtremaCoreTests(unittest.TestCase):
         )
 
         self.assertEqual(len(detected_extrema), 2)
-        self.assertEqual([extremum.aligned_seconds for extremum in detected_extrema], [1.0, 1.0])
+        self.assertEqual([extremum.aligned_seconds for extremum in detected_extrema], [2.0, 2.0])
         self.assertEqual(len(grouped_extrema), 1)
-        self.assertEqual(grouped_extrema[0].anchor_seconds, 1.0)
+        self.assertEqual(grouped_extrema[0].anchor_seconds, 2.0)
 
     def test_build_assigned_curve_points_supports_independent_values_per_file(self) -> None:
         groups = (
@@ -1040,13 +1040,20 @@ class CoreSmokeTests(unittest.TestCase):
         self.assertEqual(x_data[-1], 6)
         self.assertEqual(axis.get_xlim(), (2, 6))
 
-    def test_compute_global_time_bounds_supports_negative_offsets(self) -> None:
+    def test_compute_global_time_bounds_clamps_start_to_zero(self) -> None:
         sessions = (
             build_loaded_session("run_a", "RunA", is_reference=True),
             build_loaded_session("run_b", "RunB", offset_seconds=-5.0),
         )
 
-        self.assertEqual(compute_global_time_bounds(sessions), (-5.0, 3.0))
+        self.assertEqual(compute_global_time_bounds(sessions), (0.0, 3.0))
+
+    def test_compute_global_time_bounds_preserves_zero_origin_for_positive_offsets(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", offset_seconds=5.0),
+        )
+
+        self.assertEqual(compute_global_time_bounds(sessions), (0.0, 8.0))
 
     def test_default_source_trim_matches_full_session_range(self) -> None:
         session = build_loaded_session("run_a", "RunA", offset_seconds=5.0)
@@ -1107,7 +1114,7 @@ class CoreSmokeTests(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(compute_global_time_bounds(sessions), (1.0, 13.0))
+        self.assertEqual(compute_global_time_bounds(sessions), (0.0, 13.0))
 
     def test_normalize_offsets_for_reference_preserves_relative_layout(self) -> None:
         sessions = (

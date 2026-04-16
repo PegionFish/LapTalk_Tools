@@ -439,6 +439,34 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
+    def test_dragging_timeline_clip_does_not_go_negative(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [build_session("run_a", "RunA", offset_seconds=1.0, is_reference=True)]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+            x_position, y_position = timeline_item_center(app, app.timeline_clip_item_by_session_id["run_a"])
+
+            with patch.object(app, "_schedule_timeline_preview_refresh"):
+                app._on_timeline_button_press(SimpleNamespace(x=x_position, y=y_position, state=0))
+                app._on_timeline_drag(
+                    SimpleNamespace(
+                        x=x_position - int(app.timeline_pixels_per_second * 2.2),
+                        y=y_position,
+                        state=0,
+                    )
+                )
+
+            self.assertEqual(app.sessions[0].offset_seconds, 0.0)
+        finally:
+            app.on_close()
+
     def test_dragging_selected_timeline_clip_moves_multi_selection(self) -> None:
         app = HWiNFOPlotterApp()
         try:
@@ -467,6 +495,37 @@ class GuiBehaviorTests(unittest.TestCase):
                 )
 
             self.assertEqual([session.offset_seconds for session in app.sessions], [1.0, 6.0])
+        finally:
+            app.on_close()
+
+    def test_dragging_selected_timeline_clip_stops_at_zero_origin(self) -> None:
+        app = HWiNFOPlotterApp()
+        try:
+            app.withdraw()
+            app.sessions = [
+                build_session("run_a", "RunA", offset_seconds=3.0, is_reference=True),
+                build_session("run_b", "RunB", offset_seconds=5.0, base_value=5.0),
+            ]
+            app.refresh_after_session_change(
+                preferred_selection=["run_a", "run_b"],
+                preserve_trim_range=False,
+                refresh_preview=False,
+            )
+            app.update_idletasks()
+            app.refresh_timeline()
+            x_position, y_position = timeline_item_center(app, app.timeline_clip_item_by_session_id["run_b"])
+
+            with patch.object(app, "_schedule_timeline_preview_refresh"):
+                app._on_timeline_button_press(SimpleNamespace(x=x_position, y=y_position, state=0))
+                app._on_timeline_drag(
+                    SimpleNamespace(
+                        x=x_position - int(app.timeline_pixels_per_second * 4.2),
+                        y=y_position,
+                        state=0,
+                    )
+                )
+
+            self.assertEqual([session.offset_seconds for session in app.sessions], [0.0, 2.0])
         finally:
             app.on_close()
 
@@ -1085,7 +1144,7 @@ class GuiBehaviorTests(unittest.TestCase):
 
             app._apply_timeline_session_updates(
                 {
-                    "run_b": replace(app.sessions[1], offset_seconds=-1.0),
+                    "run_a": replace(app.sessions[0], offset_seconds=1.0),
                 }
             )
 
