@@ -246,14 +246,41 @@ def compute_session_active_timeline_range(session: LoadedCsvSession) -> tuple[fl
     return trim_start_seconds + offset_seconds, trim_end_seconds + offset_seconds
 
 
+def compute_display_shift_seconds(
+    sessions: Sequence[LoadedCsvSession],
+    *,
+    include_full_ranges: bool = False,
+) -> float:
+    visible_sessions = [session for session in sessions if session.is_visible and session.data.elapsed_seconds]
+    if not visible_sessions:
+        return 0.0
+
+    start_candidates: list[float] = []
+    for session in visible_sessions:
+        if include_full_ranges:
+            full_start_seconds, _full_end_seconds = compute_session_timeline_range(session)
+            start_candidates.append(float(full_start_seconds))
+        active_start_seconds, _active_end_seconds = compute_session_active_timeline_range(session)
+        start_candidates.append(float(active_start_seconds))
+
+    if not start_candidates:
+        return 0.0
+
+    earliest_start_seconds = min(start_candidates)
+    if earliest_start_seconds >= 0.0:
+        return 0.0
+    return float(-earliest_start_seconds)
+
+
 def compute_global_time_bounds(sessions: Sequence[LoadedCsvSession]) -> tuple[float, float]:
     visible_sessions = [session for session in sessions if session.is_visible and session.data.elapsed_seconds]
     if not visible_sessions:
         return 0.0, 1.0
 
+    display_shift_seconds = compute_display_shift_seconds(visible_sessions)
     active_ranges = [compute_session_active_timeline_range(session) for session in visible_sessions]
     start_seconds = 0.0
-    end_seconds = max(active_end_seconds for _, active_end_seconds in active_ranges)
+    end_seconds = max(active_end_seconds + display_shift_seconds for _, active_end_seconds in active_ranges)
     if end_seconds <= start_seconds:
         end_seconds = start_seconds + 1.0
     return float(start_seconds), float(end_seconds)
@@ -331,6 +358,7 @@ def filter_visible_series(
     visible_sessions = tuple(session for session in sessions if session.is_visible)
     session_by_id = {session.session_id: session for session in visible_sessions}
     descriptor_by_key = {descriptor.key: descriptor for descriptor in build_series_descriptors(visible_sessions)}
+    display_shift_seconds = compute_display_shift_seconds(visible_sessions)
     visible_start_seconds, visible_end_seconds = resolve_comparison_visible_range_seconds(
         visible_sessions,
         visible_range_seconds,
@@ -357,7 +385,10 @@ def filter_visible_series(
         if not source_trimmed_y_values:
             continue
 
-        aligned_x_values = align_series_x_values(source_trimmed_x_values, session.offset_seconds)
+        aligned_x_values = align_series_x_values(
+            source_trimmed_x_values,
+            float(session.offset_seconds) + display_shift_seconds,
+        )
         trimmed_x_values, trimmed_y_values = trim_series_to_range(
             aligned_x_values,
             source_trimmed_y_values,
@@ -733,6 +764,7 @@ def build_comparison_figure(
         raise ValueError("固定时间刻度间隔必须大于 0。")
     validate_chart_style_colors(chart_style)
 
+    display_shift_seconds = compute_display_shift_seconds(visible_sessions)
     visible_start_seconds, visible_end_seconds = resolve_comparison_visible_range_seconds(
         visible_sessions,
         visible_range_seconds,
@@ -805,6 +837,7 @@ def build_comparison_figure(
             axis,
             grouped_extrema,
             visible_range_seconds=(visible_start_seconds, visible_end_seconds),
+            display_shift_seconds=display_shift_seconds,
             line_color_by_series=line_color_by_series,
             color_by_series=color_by_series,
             point_colors=extrema_point_colors,
@@ -822,6 +855,7 @@ def build_comparison_figure(
             grouped_extrema,
             assignments=assignment_map,
             visible_range_seconds=(visible_start_seconds, visible_end_seconds),
+            display_shift_seconds=display_shift_seconds,
             line_color_by_series=line_color_by_series,
             color_by_series=color_by_series,
             point_colors=extrema_point_colors,
@@ -1218,6 +1252,7 @@ def render_extrema_markers(
     groups: Sequence[AlignedExtremaGroup],
     *,
     visible_range_seconds: tuple[float, float],
+    display_shift_seconds: float,
     line_color_by_series: Mapping[SeriesKey, str],
     color_by_series: Mapping[SeriesKey, str] | None,
     point_colors: Mapping[ExtremaPointKey, str] | None,
@@ -1227,12 +1262,13 @@ def render_extrema_markers(
     marker_count = 0
     for group in groups:
         for member in group.members:
-            if not visible_start_seconds <= float(member.aligned_seconds) <= visible_end_seconds:
+            display_aligned_seconds = float(member.aligned_seconds) + display_shift_seconds
+            if not visible_start_seconds <= display_aligned_seconds <= visible_end_seconds:
                 continue
 
             point_key = ExtremaPointKey(group.group_id, member.key)
             axis.scatter(
-                [float(member.aligned_seconds)],
+                [display_aligned_seconds],
                 [float(member.source_value)],
                 color=resolve_extrema_point_color(
                     point_key,
@@ -1258,6 +1294,7 @@ def render_assigned_curves(
     *,
     assignments: Mapping[ExtremaPointKey, float | None],
     visible_range_seconds: tuple[float, float],
+    display_shift_seconds: float,
     line_color_by_series: Mapping[SeriesKey, str],
     color_by_series: Mapping[SeriesKey, str] | None,
     point_colors: Mapping[ExtremaPointKey, str] | None,
@@ -1270,8 +1307,9 @@ def render_assigned_curves(
     rendered_curve_count = 0
 
     for series_key, (x_values, y_values) in assigned_curve_points.items():
+        shifted_x_values = [float(x_value) + display_shift_seconds for x_value in x_values]
         trimmed_x_values, trimmed_y_values = trim_series_to_range(
-            x_values,
+            shifted_x_values,
             y_values,
             visible_start_seconds,
             visible_end_seconds,
@@ -1301,7 +1339,8 @@ def render_assigned_curves(
         rendered_curve_count += 1
 
     for group in groups:
-        if not visible_start_seconds <= float(group.anchor_seconds) <= visible_end_seconds:
+        display_anchor_seconds = float(group.anchor_seconds) + display_shift_seconds
+        if not visible_start_seconds <= display_anchor_seconds <= visible_end_seconds:
             continue
         for member in group.members:
             point_key = ExtremaPointKey(group.group_id, member.key)
@@ -1310,7 +1349,7 @@ def render_assigned_curves(
                 continue
 
             axis.scatter(
-                [float(group.anchor_seconds)],
+                [display_anchor_seconds],
                 [float(assigned_value)],
                 color=resolve_extrema_point_color(
                     point_key,

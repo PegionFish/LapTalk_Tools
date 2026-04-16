@@ -502,7 +502,7 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_dragging_timeline_clip_does_not_go_negative(self) -> None:
+    def test_dragging_timeline_clip_allows_negative_offset_with_zero_origin(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
@@ -526,7 +526,8 @@ class GuiBehaviorTests(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual(app.sessions[0].offset_seconds, 0.0)
+            self.assertEqual(app.sessions[0].offset_seconds, -1.0)
+            self.assertEqual(app.timeline_start_seconds, 0.0)
         finally:
             app.on_close()
 
@@ -561,7 +562,7 @@ class GuiBehaviorTests(unittest.TestCase):
         finally:
             app.on_close()
 
-    def test_dragging_selected_timeline_clip_stops_at_zero_origin(self) -> None:
+    def test_dragging_selected_timeline_clip_allows_negative_offsets_with_zero_origin(self) -> None:
         app = HWiNFOPlotterApp()
         try:
             app.withdraw()
@@ -588,7 +589,8 @@ class GuiBehaviorTests(unittest.TestCase):
                     )
                 )
 
-            self.assertEqual([session.offset_seconds for session in app.sessions], [0.0, 2.0])
+            self.assertEqual([session.offset_seconds for session in app.sessions], [-1.0, 1.0])
+            self.assertEqual(app.timeline_start_seconds, 0.0)
         finally:
             app.on_close()
 
@@ -734,6 +736,7 @@ class GuiBehaviorTests(unittest.TestCase):
 
     def test_refresh_after_session_change_writes_comparison_structure_log(self) -> None:
         output_root = Path.cwd() / "_test_output" / "test_gui_runtime_logging"
+        shutdown_runtime_logging()
         if output_root.exists():
             shutil.rmtree(output_root)
         output_root.mkdir(parents=True, exist_ok=True)
@@ -1207,7 +1210,7 @@ class GuiBehaviorTests(unittest.TestCase):
 
             app._apply_timeline_session_updates(
                 {
-                    "run_a": replace(app.sessions[0], offset_seconds=1.0),
+                    "run_b": replace(app.sessions[1], offset_seconds=-1.0),
                 }
             )
 

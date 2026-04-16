@@ -319,10 +319,10 @@ class ExtremaCoreTests(unittest.TestCase):
             [11, 20],
         )
 
-    def test_detected_extrema_group_after_positive_offset_alignment(self) -> None:
+    def test_detected_extrema_group_after_negative_offset_alignment(self) -> None:
         sessions = (
-            build_extrema_session("run_a", "RunA", [0.0, 5.0, 0.0, 0.0], is_reference=True, offset_seconds=1.0),
-            build_extrema_session("run_b", "RunB", [0.0, 0.0, 5.0, 0.0]),
+            build_extrema_session("run_a", "RunA", [0.0, 5.0, 0.0, 0.0], is_reference=True),
+            build_extrema_session("run_b", "RunB", [0.0, 0.0, 5.0, 0.0], offset_seconds=-1.0),
         )
         config = ExtremaDetectionConfig(
             enabled=True,
@@ -341,9 +341,9 @@ class ExtremaCoreTests(unittest.TestCase):
         )
 
         self.assertEqual(len(detected_extrema), 2)
-        self.assertEqual([extremum.aligned_seconds for extremum in detected_extrema], [2.0, 2.0])
+        self.assertEqual([extremum.aligned_seconds for extremum in detected_extrema], [1.0, 1.0])
         self.assertEqual(len(grouped_extrema), 1)
-        self.assertEqual(grouped_extrema[0].anchor_seconds, 2.0)
+        self.assertEqual(grouped_extrema[0].anchor_seconds, 1.0)
 
     def test_build_assigned_curve_points_supports_independent_values_per_file(self) -> None:
         groups = (
@@ -1046,7 +1046,7 @@ class CoreSmokeTests(unittest.TestCase):
             build_loaded_session("run_b", "RunB", offset_seconds=-5.0),
         )
 
-        self.assertEqual(compute_global_time_bounds(sessions), (0.0, 3.0))
+        self.assertEqual(compute_global_time_bounds(sessions), (0.0, 8.0))
 
     def test_compute_global_time_bounds_preserves_zero_origin_for_positive_offsets(self) -> None:
         sessions = (
@@ -1162,6 +1162,25 @@ class CoreSmokeTests(unittest.TestCase):
 
         self.assertEqual(list(axis.lines[0].get_xdata()), [0.0, 1.0, 2.0, 3.0])
         self.assertEqual(list(axis.lines[1].get_xdata()), [5.0, 6.0, 7.0, 8.0])
+
+    def test_build_comparison_figure_shifts_negative_offsets_into_zero_based_display(self) -> None:
+        sessions = (
+            build_loaded_session("run_a", "RunA", is_reference=True),
+            build_loaded_session("run_b", "RunB", offset_seconds=-5.0),
+        )
+
+        figure = build_comparison_figure(
+            sessions,
+            [SeriesKey("run_a", 2), SeriesKey("run_b", 2)],
+            width_px=1280,
+            height_px=720,
+            dpi=120,
+        )
+        axis = figure.axes[0]
+
+        self.assertEqual(list(axis.lines[0].get_xdata()), [5.0, 6.0, 7.0, 8.0])
+        self.assertEqual(list(axis.lines[1].get_xdata()), [0.0, 1.0, 2.0, 3.0])
+        self.assertEqual(axis.get_xlim(), (0.0, 8.0))
 
     def test_build_comparison_figure_uses_series_key_colors_without_collision(self) -> None:
         sessions = (
