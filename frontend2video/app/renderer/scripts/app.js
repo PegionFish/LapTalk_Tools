@@ -308,6 +308,7 @@
         elements.stopButton.disabled = !isRendering;
         elements.browseOutputButton.disabled = !getSelectedTask(state);
         elements.openOutputButton.disabled = !getSelectedTask(state);
+        elements.importButton.disabled = isRendering;
     }
 
     function handleAddPathsResult(result) {

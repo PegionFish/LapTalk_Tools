@@ -29,6 +29,17 @@ class RenderService {
             };
         }
 
+        if (!this.queueService.getQueue().length) {
+            return {
+                accepted: false,
+                error: {
+                    code: "QUEUE_EMPTY",
+                    message: "Queue is empty.",
+                    details: ""
+                }
+            };
+        }
+
         const settings = await this.settingsService.ensureFfmpeg();
         if (!settings.ffmpegPath) {
             return {
@@ -221,8 +232,11 @@ function mapError(error) {
 
     const codeToMessage = {
         FFMPEG_ENCODE_FAILED: "FFmpeg ?????",
+        HTML_FILE_NOT_FOUND: "HTML ??????",
+        HTML_EXTENSION_INVALID: "????? .html / .htm ???",
         PAGE_LOAD_TIMEOUT: "???????",
         PAGE_PREPARE_FAILED: "???????????",
+        QUEUE_EMPTY: "???????????",
         RENDER_FAILED: "?????"
     };
 

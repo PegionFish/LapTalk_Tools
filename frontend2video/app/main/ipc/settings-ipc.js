@@ -4,7 +4,7 @@ function registerSettingsIpc(options) {
     const {
         app,
         appState,
-        mainWindow,
+        getMainWindow,
         queueService,
         settingsService
     } = options;
@@ -15,15 +15,19 @@ function registerSettingsIpc(options) {
 
     ipcMain.handle("settings:set-ffmpeg-path", async (_event, explicitPath) => {
         let ffmpegPath = explicitPath;
+        const mainWindow = getMainWindow();
 
         if (!ffmpegPath) {
             const result = await dialog.showOpenDialog(mainWindow, {
-                filters: [
-                    {
-                        extensions: process.platform === "win32" ? ["exe"] : ["*"],
-                        name: "FFmpeg"
-                    }
-                ],
+                filters:
+                    process.platform === "win32"
+                        ? [
+                            {
+                                extensions: ["exe"],
+                                name: "FFmpeg"
+                            }
+                        ]
+                        : undefined,
                 properties: ["openFile"]
             });
 

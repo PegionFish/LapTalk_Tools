@@ -12,55 +12,68 @@ const { SettingsService } = require("./services/settings-service");
 const { createMainWindow } = require("./windows/main-window");
 
 let mainWindow = null;
+let services = null;
 
 async function bootstrap() {
-    const appRoot = path.resolve(__dirname, "..", "..");
-    const appState = new AppState();
-    const settingsService = new SettingsService({ app, appRoot });
-    await settingsService.initialize();
+    if (!services) {
+        const appRoot = path.resolve(__dirname, "..", "..");
+        const appState = new AppState();
+        const settingsService = new SettingsService({ app, appRoot });
+        await settingsService.initialize();
 
-    const queueService = new QueueService({
-        appState,
-        settingsService
-    });
-    const renderService = new RenderService({
-        appState,
-        queueService,
-        settingsService
-    });
+        const queueService = new QueueService({
+            appState,
+            settingsService
+        });
+        const renderService = new RenderService({
+            appState,
+            queueService,
+            settingsService
+        });
 
-    appState.setSettings(settingsService.getSettings());
-    appState.setQueue(queueService.getQueue());
+        appState.setSettings(settingsService.getSettings());
+        appState.setQueue(queueService.getQueue());
+
+        services = {
+            appState,
+            queueService,
+            renderService,
+            settingsService
+        };
+
+        registerQueueIpc({
+            appState,
+            queueService,
+            renderService,
+            settingsService
+        });
+        registerDialogIpc({
+            appState,
+            getMainWindow: () => mainWindow,
+            queueService,
+            settingsService
+        });
+        registerRenderIpc({
+            renderService
+        });
+        registerSettingsIpc({
+            app,
+            appState,
+            getMainWindow: () => mainWindow,
+            queueService,
+            settingsService
+        });
+    }
 
     mainWindow = createMainWindow();
-    registerStateForwarding(mainWindow, appState);
-
-    registerDialogIpc({
-        appState,
-        mainWindow,
-        queueService,
-        settingsService
-    });
-    registerQueueIpc({
-        appState,
-        queueService,
-        renderService,
-        settingsService
-    });
-    registerRenderIpc({
-        renderService
-    });
-    registerSettingsIpc({
-        app,
-        appState,
-        mainWindow,
-        queueService,
-        settingsService
-    });
+    registerStateForwarding(mainWindow, services.appState);
 
     mainWindow.webContents.once("did-finish-load", () => {
-        mainWindow.webContents.send("settings:changed", settingsService.getSettings());
-        mainWindow.webContents.send("queue:changed", queueService.getQueue());
+        mainWindow.webContents.send(
+            "settings:changed",
+            services.settingsService.getSettings()
+        );
+        mainWindow.webContents.send("queue:changed", services.queueService.getQueue());
     });
 }
 

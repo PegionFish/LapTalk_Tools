@@ -4,12 +4,13 @@ const { dialog, ipcMain, shell } = require("electron");
 function registerDialogIpc(options) {
     const {
         appState,
-        mainWindow,
+        getMainWindow,
         queueService,
         settingsService
     } = options;
 
     ipcMain.handle("dialog:import-html", async () => {
+        const mainWindow = getMainWindow();
         const result = await dialog.showOpenDialog(mainWindow, {
             filters: [
                 {
@@ -35,6 +36,7 @@ function registerDialogIpc(options) {
         const startPath =
             (task && task.outputDirectory) ||
             settingsService.getSettings().lastOutputDirectory;
+        const mainWindow = getMainWindow();
 
         const result = await dialog.showOpenDialog(mainWindow, {
             defaultPath: startPath || undefined,

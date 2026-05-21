@@ -42,10 +42,23 @@ class QueueService {
 
             knownIdentities.add(validation.identity);
 
-            const duration = await resolveDurationSeconds({
-                htmlPath: validation.normalizedPath,
-                manualDurationSeconds: null
-            });
+            let duration = null;
+            try {
+                duration = await resolveDurationSeconds({
+                    htmlPath: validation.normalizedPath,
+                    manualDurationSeconds: null
+                });
+            } catch (error) {
+                rejected.push({
+                    path: filePath,
+                    error: {
+                        code: "HTML_READ_FAILED",
+                        message: "Unable to read HTML file.",
+                        details: error.message
+                    }
+                });
+                continue;
+            }
 
             const task = createTask(validation.normalizedPath, validation.identity, {
                 durationSeconds: duration.seconds,
@@ -232,6 +245,7 @@ function applyTaskDefaults(task, defaults) {
 
     return {
         ...task,
+        error: null,
         fps: defaults.fps,
         frameAlignedDurationSeconds: durationInfo.frameAlignedDurationSeconds,
         height: defaults.height,
@@ -241,7 +255,7 @@ function applyTaskDefaults(task, defaults) {
             stage: "idle",
             totalFrames: durationInfo.totalFrames
         },
-        status: task.status === "done" ? "done" : "ready",
+        status: "ready",
         width: defaults.width
     };
 }
