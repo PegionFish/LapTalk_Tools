@@ -1,0 +1,19 @@
+appId: com.pegionfish.frontend2video
+productName: Frontend2Video
+directories:
+  buildResources: app/assets
+files:
+  - app/**/*
+  - package.json
+asar: true
+win:
+  target:
+    - nsis
+mac:
+  target:
+    - dmg
+  category: public.app-category.video
+linux:
+  target:
+    - AppImage
+  category: AudioVideo

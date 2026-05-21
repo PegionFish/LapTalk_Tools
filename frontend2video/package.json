@@ -1,0 +1,45 @@
+{
+  "name": "frontend2video",
+  "version": "0.1.0",
+  "description": "Desktop renderer for exporting local HTML pages to video assets.",
+  "main": "app/main/main.js",
+  "author": "PegionFish",
+  "license": "UNLICENSED",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "check": "node scripts/check-syntax.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "electron": "^37.0.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.pegionfish.frontend2video",
+    "productName": "Frontend2Video",
+    "files": [
+      "app/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "app/assets"
+    },
+    "asar": true,
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.video"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "AudioVideo"
+    }
+  }
+}

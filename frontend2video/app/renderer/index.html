@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+        >
+        <title>Frontend2Video</title>
+        <link rel="stylesheet" href="./styles/app.css">
+    </head>
+    <body>
+        <div class="app-shell" id="drop-target">
+            <header class="topbar panel">
+                <div>
+                    <p class="eyebrow">LapTalk Render Studio</p>
+                    <h1>Frontend2Video</h1>
+                </div>
+                <div class="topbar-actions">
+                    <button id="import-button" class="button button-primary" type="button">
+                        ?? HTML
+                    </button>
+                    <button id="clear-button" class="button" type="button">??</button>
+                </div>
+            </header>
+
+            <main class="main-grid">
+                <section class="left-column panel">
+                    <div class="panel-heading">
+                        <div>
+                            <p class="eyebrow">Queue</p>
+                            <h2>?????</h2>
+                        </div>
+                    </div>
+
+                    <section class="parameter-card">
+                        <div class="field-group">
+                            <label for="resolution-preset">?????</label>
+                            <select id="resolution-preset"></select>
+                        </div>
+
+                        <div class="inline-fields">
+                            <div class="field-group">
+                                <label for="width-input">??</label>
+                                <input id="width-input" type="number" min="1" step="1">
+                            </div>
+                            <div class="field-group">
+                                <label for="height-input">??</label>
+                                <input id="height-input" type="number" min="1" step="1">
+                            </div>
+                            <div class="field-group">
+                                <label for="fps-select">??</label>
+                                <select id="fps-select"></select>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="queue-section">
+                        <div class="queue-header">
+                            <span>????</span>
+                            <span id="queue-count" class="queue-count">0 ?</span>
+                        </div>
+                        <div id="queue-list" class="queue-list"></div>
+                    </section>
+                </section>
+
+                <section class="right-column panel">
+                    <div class="panel-heading">
+                        <div>
+                            <p class="eyebrow">Preview</p>
+                            <h2>????</h2>
+                        </div>
+                    </div>
+
+                    <div class="preview-frame">
+                        <img id="preview-image" alt="render preview">
+                        <div id="preview-empty" class="preview-empty">
+                            ?? HTML ????????????????????????
+                        </div>
+                    </div>
+
+                    <div class="preview-meta">
+                        <div>
+                            <span class="meta-label">????</span>
+                            <strong id="current-task-name">?????</strong>
+                        </div>
+                        <div>
+                            <span class="meta-label">??</span>
+                            <strong id="current-task-status">idle</strong>
+                        </div>
+                    </div>
+                </section>
+            </main>
+
+            <section class="progress-panel panel">
+                <div class="progress-topline">
+                    <span id="progress-title">???????</span>
+                    <span id="progress-counts">0 / 0 ?</span>
+                </div>
+                <div class="progress-track">
+                    <div id="progress-bar" class="progress-bar"></div>
+                </div>
+                <div class="progress-bottomline">
+                    <span id="progress-percent">0%</span>
+                    <span id="status-message">????</span>
+                </div>
+            </section>
+
+            <section class="output-panel panel">
+                <div class="output-path-group">
+                    <span class="meta-label">?????</span>
+                    <strong id="output-directory">?????</strong>
+                </div>
+                <button id="browse-output-button" class="button" type="button">
+                    ??
+                </button>
+            </section>
+
+            <footer class="footer-bar panel">
+                <div class="version-strip">
+                    <span id="app-version">v0.0.0</span>
+                    <span class="divider"></span>
+                    <span id="ffmpeg-version">FFmpeg ????</span>
+                </div>
+                <div class="footer-actions">
+                    <button id="export-button" class="button button-primary" type="button">
+                        ??
+                    </button>
+                    <button id="stop-button" class="button" type="button">??</button>
+                    <button id="open-output-button" class="button" type="button">
+                        ???????
+                    </button>
+                    <button id="settings-button" class="button" type="button">??</button>
+                </div>
+            </footer>
+        </div>
+
+        <dialog id="settings-dialog" class="settings-dialog">
+            <form method="dialog" class="settings-content">
+                <div class="settings-header">
+                    <div>
+                        <p class="eyebrow">Settings</p>
+                        <h2>????</h2>
+                    </div>
+                    <button id="settings-close-button" class="button" value="cancel">
+                        ??
+                    </button>
+                </div>
+
+                <div class="settings-body">
+                    <div class="field-group">
+                        <label>FFmpeg ??</label>
+                        <code id="settings-ffmpeg-path" class="code-block">???</code>
+                    </div>
+                    <div class="field-group">
+                        <label>FFmpeg ??</label>
+                        <code id="settings-ffmpeg-version" class="code-block">????</code>
+                    </div>
+                </div>
+
+                <div class="settings-actions">
+                    <button id="choose-ffmpeg-button" class="button button-primary" type="button">
+                        ?? FFmpeg
+                    </button>
+                </div>
+            </form>
+        </dialog>
+
+        <script src="./scripts/state.js"></script>
+        <script src="./scripts/queue-view.js"></script>
+        <script src="./scripts/preview-view.js"></script>
+        <script src="./scripts/settings-dialog.js"></script>
+        <script src="./scripts/app.js"></script>
+    </body>
+</html>
