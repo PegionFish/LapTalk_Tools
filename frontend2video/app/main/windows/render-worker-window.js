@@ -1,15 +1,11 @@
-const { BrowserWindow, session } = require("electron");
+const crypto = require("node:crypto");
+const { BrowserWindow } = require("electron");
 
 function createRenderWorkerWindow(options) {
     const {
-        browserProfileDirectory,
         height,
         width
     } = options;
-
-    const isolatedSession = session.fromPath(browserProfileDirectory, {
-        cache: false
-    });
 
     return new BrowserWindow({
         backgroundColor: "#00000000",
@@ -22,8 +18,8 @@ function createRenderWorkerWindow(options) {
             backgroundThrottling: false,
             contextIsolation: true,
             nodeIntegration: false,
+            partition: `render-worker-${crypto.randomUUID()}`,
             sandbox: false,
-            session: isolatedSession,
             webSecurity: false
         },
         width

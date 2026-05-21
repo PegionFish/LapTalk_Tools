@@ -27,13 +27,61 @@ async function cleanupTempWorkspace(workspace) {
         return;
     }
 
-    await fs.rm(workspace.rootDirectory, {
-        recursive: true,
-        force: true
+    await removeDirectoryWithRetries(workspace.rootDirectory);
+}
+
+async function removeDirectoryWithRetries(
+    directoryPath,
+    options = {}
+) {
+    const attempts = options.attempts ?? 8;
+    const delayMs = options.delayMs ?? 180;
+    const rmImpl = options.rmImpl ?? fs.rm;
+
+    let lastError = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+            await rmImpl(directoryPath, {
+                recursive: true,
+                force: true
+            });
+            return;
+        } catch (error) {
+            lastError = error;
+
+            if (!isRetryableDirectoryCleanupError(error) || attempt === attempts) {
+                throw error;
+            }
+
+            await sleep(delayMs * attempt);
+        }
+    }
+
+    if (lastError) {
+        throw lastError;
+    }
+}
+
+function isRetryableDirectoryCleanupError(error) {
+    return Boolean(
+        error &&
+        (
+            error.code === "EBUSY" ||
+            error.code === "EPERM" ||
+            error.code === "ENOTEMPTY"
+        )
+    );
+}
+
+function sleep(delayMs) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, delayMs);
     });
 }
 
 module.exports = {
     cleanupTempWorkspace,
-    createTempWorkspace
+    createTempWorkspace,
+    removeDirectoryWithRetries
 };

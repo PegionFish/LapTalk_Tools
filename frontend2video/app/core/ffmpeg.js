@@ -147,6 +147,65 @@ function getSidecarCandidatePaths(appRoot, resourcesPath) {
     ];
 }
 
+function getPlatformManagedCandidatePaths() {
+    if (process.platform !== "win32") {
+        return [];
+    }
+
+    const binaryName = getFfmpegBinaryName();
+    const localAppData = process.env.LOCALAPPDATA;
+    if (!localAppData) {
+        return [];
+    }
+
+    const candidates = [
+        path.join(localAppData, "Microsoft", "WinGet", "Links", binaryName)
+    ];
+
+    const packagesRoot = path.join(localAppData, "Microsoft", "WinGet", "Packages");
+    if (!fileExists(packagesRoot)) {
+        return candidates;
+    }
+
+    try {
+        const packageDirectories = fs.readdirSync(packagesRoot, {
+            withFileTypes: true
+        });
+
+        for (const packageDirectory of packageDirectories) {
+            if (!packageDirectory.isDirectory()) {
+                continue;
+            }
+
+            if (!/^Gyan\.FFmpeg_/i.test(packageDirectory.name)) {
+                continue;
+            }
+
+            const packageRoot = path.join(packagesRoot, packageDirectory.name);
+            const extractedDirectories = fs.readdirSync(packageRoot, {
+                withFileTypes: true
+            });
+
+            for (const extractedDirectory of extractedDirectories) {
+                if (!extractedDirectory.isDirectory()) {
+                    continue;
+                }
+
+                candidates.push(
+                    path.join(
+                        packageRoot,
+                        extractedDirectory.name,
+                        "bin",
+                        binaryName
+                    )
+                );
+            }
+        }
+    } catch {}
+
+    return candidates;
+}
+
 async function resolveAvailableFfmpeg(options) {
     const {
         appRoot,
@@ -161,6 +220,10 @@ async function resolveAvailableFfmpeg(options) {
 
     for (const candidatePath of getSidecarCandidatePaths(appRoot, resourcesPath)) {
         candidates.push({ path: candidatePath, source: "sidecar" });
+    }
+
+    for (const candidatePath of getPlatformManagedCandidatePaths()) {
+        candidates.push({ path: candidatePath, source: "platform-managed" });
     }
 
     const pathCandidate = await findExecutableOnPath(getFfmpegBinaryName());

@@ -227,12 +227,27 @@ function withTimeout(promise, timeoutMs, code) {
 
 async function destroyHiddenWindow(hiddenWindow, onWindowDestroyed) {
     if (hiddenWindow && !hiddenWindow.isDestroyed()) {
+        const activeSession = hiddenWindow.webContents.session;
+
+        try {
+            if (activeSession && typeof activeSession.flushStorageData === "function") {
+                await activeSession.flushStorageData();
+            }
+        } catch {}
+
         hiddenWindow.destroy();
+        await sleep(180);
     }
 
     if (onWindowDestroyed) {
         onWindowDestroyed();
     }
+}
+
+function sleep(delayMs) {
+    return new Promise((resolve) => {
+        setTimeout(resolve, delayMs);
+    });
 }
 
 module.exports = {

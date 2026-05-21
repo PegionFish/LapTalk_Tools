@@ -11,7 +11,8 @@
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "check": "node scripts/check-syntax.js",
-    "test": "node --test"
+    "test": "node --test",
+    "smoke:render": "node scripts/smoke-render.js"
   },
   "dependencies": {
     "electron": "^37.0.0"

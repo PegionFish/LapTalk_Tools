@@ -31,6 +31,7 @@ npm install
 ```powershell
 npm run check
 npm test
+npm run smoke:render
 npm run dev
 npm run pack
 npm run dist
