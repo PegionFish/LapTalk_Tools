@@ -14,10 +14,9 @@
     "test": "node --test",
     "smoke:render": "node scripts/smoke-render.js"
   },
-  "dependencies": {
-    "electron": "^37.0.0"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "electron": "^37.0.0",
     "electron-builder": "^26.0.12"
   },
   "build": {
