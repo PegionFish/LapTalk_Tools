@@ -12,7 +12,8 @@
     "dist": "electron-builder",
     "check": "node scripts/check-syntax.js",
     "test": "node --test",
-    "smoke:render": "node scripts/smoke-render.js"
+    "smoke:render": "node scripts/smoke-render.js",
+    "test:metadata-page": "node scripts/metadata-page-check.js"
   },
   "dependencies": {},
   "devDependencies": {

@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="UTF-8">
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0"
+        >
+        <meta name="laptalk:duration-seconds" content="3.25">
+        <title>Metadata Timeline Demo</title>
+        <style>
+            :root {
+                color-scheme: dark;
+                --bg-0: #071017;
+                --bg-1: #0d1c26;
+                --card: rgba(11, 23, 32, 0.86);
+                --card-border: rgba(255, 255, 255, 0.08);
+                --text-0: #eff7fb;
+                --text-1: rgba(239, 247, 251, 0.76);
+                --accent: #8bf0c3;
+                --accent-strong: #4dd2ff;
+                --warn: #ffd37c;
+                --grid: rgba(255, 255, 255, 0.05);
+            }
+
+            * {
+                box-sizing: border-box;
+            }
+
+            html,
+            body {
+                height: 100%;
+                margin: 0;
+                overflow: hidden;
+            }
+
+            body {
+                align-items: center;
+                background:
+                    radial-gradient(circle at 15% 20%, rgba(77, 210, 255, 0.16), transparent 28%),
+                    radial-gradient(circle at 82% 18%, rgba(139, 240, 195, 0.16), transparent 22%),
+                    linear-gradient(140deg, var(--bg-0), var(--bg-1));
+                color: var(--text-0);
+                display: grid;
+                font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
+                place-items: center;
+            }
+
+            .scene {
+                background:
+                    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+                    radial-gradient(circle at top, rgba(77, 210, 255, 0.08), transparent 36%),
+                    rgba(3, 10, 16, 0.78);
+                background-position: center center;
+                background-size: 48px 48px, 48px 48px, auto, auto;
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 36px;
+                box-shadow:
+                    inset 0 0 0 1px rgba(255, 255, 255, 0.03),
+                    0 30px 90px rgba(0, 0, 0, 0.28);
+                display: grid;
+                grid-template-columns: 1.05fr 0.95fr;
+                gap: 28px;
+                height: 900px;
+                overflow: hidden;
+                padding: 40px;
+                position: relative;
+                width: 1600px;
+            }
+
+            .scene::before {
+                background: radial-gradient(circle, rgba(139, 240, 195, 0.28), transparent 66%);
+                content: "";
+                filter: blur(12px);
+                height: 280px;
+                position: absolute;
+                right: -40px;
+                top: 160px;
+                width: 280px;
+            }
+
+            .left-column,
+            .right-column {
+                display: grid;
+                position: relative;
+                z-index: 1;
+            }
+
+            .left-column {
+                grid-template-rows: auto auto auto 1fr;
+            }
+
+            .eyebrow {
+                align-items: center;
+                color: var(--accent);
+                display: inline-flex;
+                font-size: 18px;
+                font-weight: 700;
+                gap: 10px;
+                letter-spacing: 0.14em;
+                margin-bottom: 18px;
+                text-transform: uppercase;
+            }
+
+            .eyebrow::before {
+                background: linear-gradient(90deg, var(--accent), transparent);
+                border-radius: 999px;
+                content: "";
+                height: 2px;
+                width: 48px;
+            }
+
+            h1 {
+                font-size: 82px;
+                letter-spacing: -0.05em;
+                line-height: 0.94;
+                margin: 0;
+            }
+
+            .subline {
+                color: var(--text-1);
+                font-size: 24px;
+                line-height: 1.6;
+                margin-top: 20px;
+                max-width: 680px;
+            }
+
+            .status-strip {
+                display: flex;
+                gap: 14px;
+                margin-top: 32px;
+            }
+
+            .status-pill {
+                background: rgba(255, 255, 255, 0.04);
+                border: 1px solid rgba(255, 255, 255, 0.07);
+                border-radius: 999px;
+                color: var(--text-1);
+                font-size: 18px;
+                font-weight: 600;
+                padding: 10px 18px;
+            }
+
+            .hero-card {
+                align-self: end;
+                background: linear-gradient(180deg, rgba(10, 18, 25, 0.96), rgba(7, 14, 20, 0.88));
+                border: 1px solid var(--card-border);
+                border-radius: 30px;
+                display: grid;
+                gap: 24px;
+                margin-top: 36px;
+                padding: 28px;
+            }
+
+            .card-head {
+                align-items: center;
+                display: flex;
+                justify-content: space-between;
+            }
+
+            .card-head strong {
+                font-size: 26px;
+                letter-spacing: -0.03em;
+            }
+
+            .phase-badge {
+                background: rgba(139, 240, 195, 0.14);
+                border: 1px solid rgba(139, 240, 195, 0.2);
+                border-radius: 999px;
+                color: var(--accent);
+                font-size: 16px;
+                font-weight: 700;
+                padding: 8px 14px;
+            }
+
+            .metrics {
+                display: grid;
+                gap: 14px;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+
+            .metric {
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.05);
+                border-radius: 22px;
+                padding: 18px;
+            }
+
+            .metric-label {
+                color: var(--text-1);
+                font-size: 14px;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+            }
+
+            .metric-value {
+                font-size: 34px;
+                font-weight: 800;
+                letter-spacing: -0.04em;
+                margin-top: 10px;
+            }
+
+            .timeline-shell {
+                align-items: center;
+                display: grid;
+                gap: 18px;
+                grid-template-rows: auto auto 1fr;
+            }
+
+            .timeline-panel {
+                background: linear-gradient(180deg, rgba(9, 18, 24, 0.92), rgba(6, 12, 18, 0.88));
+                border: 1px solid var(--card-border);
+                border-radius: 32px;
+                overflow: hidden;
+                padding: 28px;
+                position: relative;
+            }
+
+            .timeline-header {
+                align-items: end;
+                display: flex;
+                justify-content: space-between;
+                margin-bottom: 22px;
+            }
+
+            .timeline-header strong {
+                font-size: 30px;
+                letter-spacing: -0.03em;
+            }
+
+            .timeline-header span {
+                color: var(--text-1);
+                font-size: 17px;
+            }
+
+            .timeline-track {
+                background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
+                border-radius: 999px;
+                height: 8px;
+                margin: 22px 0 18px;
+                overflow: hidden;
+                position: relative;
+            }
+
+            .timeline-fill {
+                background: linear-gradient(90deg, var(--accent), var(--accent-strong));
+                border-radius: inherit;
+                height: 100%;
+                transform-origin: left center;
+                width: 0%;
+            }
+
+            .timeline-nodes {
+                display: grid;
+                gap: 16px;
+                grid-template-columns: repeat(4, minmax(0, 1fr));
+            }
+
+            .node {
+                background: rgba(255, 255, 255, 0.03);
+                border: 1px solid rgba(255, 255, 255, 0.04);
+                border-radius: 24px;
+                min-height: 162px;
+                opacity: 0.34;
+                padding: 18px;
+                transform: translateY(22px) scale(0.96);
+                transition:
+                    opacity 160ms linear,
+                    transform 160ms linear,
+                    border-color 160ms linear,
+                    box-shadow 160ms linear;
+            }
+
+            .node.active {
+                border-color: rgba(139, 240, 195, 0.38);
+                box-shadow: inset 0 0 0 1px rgba(139, 240, 195, 0.12);
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+
+            .node-index {
+                color: var(--warn);
+                font-size: 14px;
+                font-weight: 800;
+                letter-spacing: 0.12em;
+                text-transform: uppercase;
+            }
+
+            .node-title {
+                font-size: 24px;
+                font-weight: 800;
+                letter-spacing: -0.03em;
+                margin-top: 12px;
+            }
+
+            .node-copy {
+                color: var(--text-1);
+                font-size: 16px;
+                line-height: 1.55;
+                margin-top: 12px;
+            }
+
+            .clock-panel {
+                align-items: center;
+                display: flex;
+                gap: 18px;
+                justify-content: space-between;
+                margin-top: 24px;
+            }
+
+            .clock {
+                color: var(--text-0);
+                font-size: 48px;
+                font-variant-numeric: tabular-nums;
+                font-weight: 800;
+                letter-spacing: -0.04em;
+            }
+
+            .caption {
+                color: var(--text-1);
+                font-size: 18px;
+                line-height: 1.5;
+                max-width: 420px;
+                text-align: right;
+            }
+
+            .progress-card {
+                align-self: end;
+                background: linear-gradient(180deg, rgba(8, 14, 20, 0.92), rgba(6, 12, 18, 0.88));
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 30px;
+                display: grid;
+                gap: 16px;
+                padding: 24px 28px;
+            }
+
+            .progress-row {
+                align-items: center;
+                display: flex;
+                justify-content: space-between;
+            }
+
+            .progress-row span:first-child {
+                color: var(--text-1);
+                font-size: 16px;
+            }
+
+            .progress-row strong {
+                font-size: 22px;
+                letter-spacing: -0.03em;
+            }
+
+            html[data-render-mode="1"] .timeline-fill,
+            html[data-render-mode="1"] .node {
+                transition: none;
+            }
+        </style>
+    </head>
+    <body>
+        <main class="scene">
+            <section class="left-column">
+                <div>
+                    <div class="eyebrow">Metadata Duration</div>
+                    <h1>??????? HTML</h1>
+                    <p class="subline">
+                        ???????? <code>laptalk:duration-seconds</code> metadata?
+                        ?????? <code>window.__setRenderTime</code> ???????????
+                    </p>
+                </div>
+
+                <div class="status-strip">
+                    <div class="status-pill" id="duration-pill">Duration 3.25s</div>
+                    <div class="status-pill" id="frame-pill">Frame Synced</div>
+                    <div class="status-pill" id="phase-pill">Phase 01</div>
+                </div>
+
+                <section class="hero-card">
+                    <div class="card-head">
+                        <strong>?????</strong>
+                        <span class="phase-badge" id="phase-badge">BOOTSTRAP</span>
+                    </div>
+
+                    <div class="metrics">
+                        <article class="metric">
+                            <div class="metric-label">Render Time</div>
+                            <div class="metric-value" id="metric-ms">0 ms</div>
+                        </article>
+                        <article class="metric">
+                            <div class="metric-label">Timeline</div>
+                            <div class="metric-value" id="metric-progress">0%</div>
+                        </article>
+                        <article class="metric">
+                            <div class="metric-label">Segment</div>
+                            <div class="metric-value" id="metric-segment">01</div>
+                        </article>
+                    </div>
+                </section>
+            </section>
+
+            <section class="right-column">
+                <div class="timeline-shell">
+                    <section class="timeline-panel">
+                        <div class="timeline-header">
+                            <strong>Metadata Timeline Frontend</strong>
+                            <span id="meta-source">HTML metadata ? 3.25 seconds</span>
+                        </div>
+
+                        <div class="timeline-track">
+                            <div class="timeline-fill" id="timeline-fill"></div>
+                        </div>
+
+                        <div class="timeline-nodes">
+                            <article class="node" data-index="1">
+                                <div class="node-index">Stage 01</div>
+                                <div class="node-title">Load</div>
+                                <div class="node-copy">????????????????????</div>
+                            </article>
+                            <article class="node" data-index="2">
+                                <div class="node-index">Stage 02</div>
+                                <div class="node-title">Drive</div>
+                                <div class="node-copy">?? <code>__setRenderTime</code> ??????</div>
+                            </article>
+                            <article class="node" data-index="3">
+                                <div class="node-index">Stage 03</div>
+                                <div class="node-title">Bind</div>
+                                <div class="node-copy">?????????????????</div>
+                            </article>
+                            <article class="node" data-index="4">
+                                <div class="node-index">Stage 04</div>
+                                <div class="node-title">Export</div>
+                                <div class="node-copy">??????? metadata ????? MOV?</div>
+                            </article>
+                        </div>
+
+                        <div class="clock-panel">
+                            <div class="clock" id="clock-label">00:00.000</div>
+                            <div class="caption" id="caption-label">
+                                ???????????
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="progress-card">
+                        <div class="progress-row">
+                            <span>metadata ??</span>
+                            <strong>HTML &lt;meta&gt;</strong>
+                        </div>
+                        <div class="progress-row">
+                            <span>????</span>
+                            <strong>3.25 seconds</strong>
+                        </div>
+                        <div class="progress-row">
+                            <span>????</span>
+                            <strong id="footer-phase">Bootstrap</strong>
+                        </div>
+                    </section>
+                </div>
+            </section>
+        </main>
+
+        <script>
+            const DURATION_MS = 3250;
+            const phaseLabels = [
+                {
+                    badge: "BOOTSTRAP",
+                    caption: "?? metadata???????????",
+                    footer: "Bootstrap"
+                },
+                {
+                    badge: "TIMELINE",
+                    caption: "???????????????????????",
+                    footer: "Timeline"
+                },
+                {
+                    badge: "BINDING",
+                    caption: "?????????????????????",
+                    footer: "Binding"
+                },
+                {
+                    badge: "EXPORT",
+                    caption: "????????????? metadata ???????",
+                    footer: "Export"
+                }
+            ];
+
+            const nodeElements = Array.from(document.querySelectorAll(".node"));
+            const timelineFill = document.getElementById("timeline-fill");
+            const metricMs = document.getElementById("metric-ms");
+            const metricProgress = document.getElementById("metric-progress");
+            const metricSegment = document.getElementById("metric-segment");
+            const phasePill = document.getElementById("phase-pill");
+            const phaseBadge = document.getElementById("phase-badge");
+            const footerPhase = document.getElementById("footer-phase");
+            const clockLabel = document.getElementById("clock-label");
+            const captionLabel = document.getElementById("caption-label");
+
+            function formatClock(ms) {
+                const clamped = Math.max(0, Math.min(DURATION_MS, ms));
+                const seconds = Math.floor(clamped / 1000);
+                const milliseconds = Math.floor(clamped % 1000);
+                const hundredths = String(milliseconds).padStart(3, "0");
+                return `00:${String(seconds).padStart(2, "0")}.${hundredths}`;
+            }
+
+            function applyRenderState(ms) {
+                const clamped = Math.max(0, Math.min(DURATION_MS, ms));
+                const progress = clamped / DURATION_MS;
+                const phaseIndex = Math.min(
+                    phaseLabels.length - 1,
+                    Math.floor(progress * phaseLabels.length)
+                );
+                const phase = phaseLabels[phaseIndex];
+
+                timelineFill.style.width = `${(progress * 100).toFixed(2)}%`;
+                metricMs.textContent = `${Math.round(clamped)} ms`;
+                metricProgress.textContent = `${Math.round(progress * 100)}%`;
+                metricSegment.textContent = String(phaseIndex + 1).padStart(2, "0");
+                phasePill.textContent = `Phase ${String(phaseIndex + 1).padStart(2, "0")}`;
+                phaseBadge.textContent = phase.badge;
+                footerPhase.textContent = phase.footer;
+                clockLabel.textContent = formatClock(clamped);
+                captionLabel.textContent = phase.caption;
+
+                nodeElements.forEach((element, index) => {
+                    const activationStart = index / nodeElements.length;
+                    element.classList.toggle("active", progress >= activationStart);
+                });
+
+                document.documentElement.style.setProperty("--timeline-progress", progress.toFixed(4));
+            }
+
+            window.__setRenderTime = async (ms) => {
+                applyRenderState(ms);
+            };
+
+            applyRenderState(0);
+        </script>
+    </body>
+</html>
