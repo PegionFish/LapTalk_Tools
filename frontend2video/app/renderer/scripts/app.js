@@ -17,7 +17,7 @@
             ffmpegVersion: "",
             lastOutputDirectory: ""
         },
-        statusMessage: "????"
+        statusMessage: "准备就绪"
     });
 
     const requestedPreviewIds = new Set();
@@ -98,7 +98,7 @@
             const result = await window.frontend2video.settings.setFfmpegPath();
             if (result && result.ok && result.settings) {
                 applySettings(result.settings);
-                setStatusMessage("FFmpeg ??????");
+                setStatusMessage("FFmpeg 路径已更新。");
                 return result;
             }
 
@@ -155,14 +155,14 @@
                 previews: {},
                 queue: [],
                 selectedTaskId: "",
-                statusMessage: "??????"
+                statusMessage: "队列已清空。"
             }));
         });
 
         elements.exportButton.addEventListener("click", async () => {
             const result = await window.frontend2video.render.start();
             if (result.accepted) {
-                setStatusMessage("??????");
+                setStatusMessage("已开始导出。");
                 return;
             }
 
@@ -174,7 +174,7 @@
         elements.stopButton.addEventListener("click", async () => {
             const result = await window.frontend2video.render.stop();
             if (result.accepted) {
-                setStatusMessage("???????");
+                setStatusMessage("正在停止渲染。");
             }
         });
 
@@ -196,7 +196,7 @@
                 selectedTask.id
             );
             if (result.ok) {
-                setStatusMessage("????????");
+                setStatusMessage("导出目录已更新。");
             }
         });
 
@@ -285,18 +285,18 @@
 
         window.frontend2video.events.onRenderProgress((payload) => {
             setStatusMessage(
-                `${payload.stage === "encoding" ? "????" : "????"}?${payload.currentFrame}/${payload.totalFrames}`
+                `${payload.stage === "encoding" ? "正在编码" : "正在抓帧"}：${payload.currentFrame}/${payload.totalFrames}`
             );
         });
 
         window.frontend2video.events.onRenderStatus((payload) => {
             if (payload.status === "done") {
-                setStatusMessage("?????");
+                setStatusMessage("导出完成。");
                 return;
             }
 
             if (payload.status === "stopped") {
-                setStatusMessage("??????");
+                setStatusMessage("渲染已停止。");
                 return;
             }
 
@@ -309,7 +309,7 @@
     function renderFooter(state) {
         elements.appVersion.textContent = `v${state.appVersion}`;
         elements.ffmpegVersion.textContent =
-            state.settings.ffmpegVersion || "FFmpeg ????";
+            state.settings.ffmpegVersion || "FFmpeg 未检测到";
     }
 
     function updateButtonStates(state) {
@@ -331,7 +331,7 @@
         if (result.rejected && result.rejected.length) {
             setStatusMessage(result.rejected[0].error.message);
         } else if (result.addedTasks && result.addedTasks.length) {
-            setStatusMessage(`??? ${result.addedTasks.length} ????`);
+            setStatusMessage(`已加入 ${result.addedTasks.length} 个任务。`);
         }
     }
 
@@ -361,17 +361,17 @@
         const fps = Number(elements.fpsSelect.value);
 
         if (!Number.isInteger(width) || width <= 0) {
-            setStatusMessage("?????????");
+            setStatusMessage("宽度必须是正整数。");
             return;
         }
 
         if (!Number.isInteger(height) || height <= 0) {
-            setStatusMessage("?????????");
+            setStatusMessage("高度必须是正整数。");
             return;
         }
 
         if (!Number.isInteger(fps) || fps <= 0) {
-            setStatusMessage("?????????");
+            setStatusMessage("帧率必须是正整数。");
             return;
         }
 
@@ -382,7 +382,7 @@
         });
 
         if (result.ok) {
-            setStatusMessage("??????????");
+            setStatusMessage("默认渲染参数已更新。");
         }
     }
 
@@ -440,7 +440,7 @@
             { label: "3840 x 2160", value: "3840x2160" },
             { label: "2560 x 1440", value: "2560x1440" },
             { label: "1920 x 1080", value: "1920x1080" },
-            { label: "???", value: "custom" }
+            { label: "自定义", value: "custom" }
         ].forEach((optionData) => {
             const option = document.createElement("option");
             option.textContent = optionData.label;

@@ -8,13 +8,13 @@
 
         function render(state) {
             const queue = state.queue;
-            countElement.textContent = `${queue.length} ?`;
+            countElement.textContent = `${queue.length} 项`;
             container.innerHTML = "";
 
             if (!queue.length) {
                 const empty = document.createElement("div");
                 empty.className = "empty-state";
-                empty.textContent = "???????? HTML ???????? HTML??";
+                empty.textContent = "还没有任务。拖入 HTML 文件或点击“导入 HTML”。";
                 container.appendChild(empty);
                 return;
             }
@@ -43,16 +43,16 @@
 
                 const metaRow = document.createElement("div");
                 metaRow.className = "queue-item-meta";
-                metaRow.textContent = `${task.width}x${task.height} ? ${task.fps}fps ? ${formatSeconds(task.durationSeconds)}s`;
+                metaRow.textContent = `${task.width}x${task.height} · ${task.fps}fps · ${formatSeconds(task.durationSeconds)}s`;
 
                 const footerRow = document.createElement("div");
                 footerRow.className = "queue-item-footer";
 
                 const durationSource = document.createElement("span");
-                durationSource.textContent = `?????${task.durationSource}`;
+                durationSource.textContent = `时长来源：${task.durationSource}`;
 
                 const progress = document.createElement("span");
-                progress.textContent = `${task.progress.currentFrame}/${task.progress.totalFrames} ?`;
+                progress.textContent = `${task.progress.currentFrame}/${task.progress.totalFrames} 帧`;
 
                 footerRow.append(durationSource, progress);
                 button.append(titleRow, metaRow, footerRow);

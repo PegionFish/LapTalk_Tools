@@ -23,8 +23,8 @@
 
         function render(state) {
             const settings = state.settings;
-            ffmpegPath.textContent = settings.ffmpegPath || "???";
-            ffmpegVersion.textContent = settings.ffmpegVersion || "????";
+            ffmpegPath.textContent = settings.ffmpegPath || "未设置";
+            ffmpegVersion.textContent = settings.ffmpegVersion || "未检测到";
         }
 
         function open() {

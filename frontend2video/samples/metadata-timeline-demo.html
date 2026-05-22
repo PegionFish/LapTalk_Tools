@@ -362,10 +362,10 @@
             <section class="left-column">
                 <div>
                     <div class="eyebrow">Metadata Duration</div>
-                    <h1>??????? HTML</h1>
+                    <h1>把页面时间写进 HTML</h1>
                     <p class="subline">
-                        ???????? <code>laptalk:duration-seconds</code> metadata?
-                        ?????? <code>window.__setRenderTime</code> ???????????
+                        这个示例页面自带 <code>laptalk:duration-seconds</code> metadata，
+                        并通过统一的 <code>window.__setRenderTime</code> 钩子驱动所有视觉状态。
                     </p>
                 </div>
 
@@ -377,7 +377,7 @@
 
                 <section class="hero-card">
                     <div class="card-head">
-                        <strong>?????</strong>
+                        <strong>渲染诊断卡</strong>
                         <span class="phase-badge" id="phase-badge">BOOTSTRAP</span>
                     </div>
 
@@ -403,7 +403,7 @@
                     <section class="timeline-panel">
                         <div class="timeline-header">
                             <strong>Metadata Timeline Frontend</strong>
-                            <span id="meta-source">HTML metadata ? 3.25 seconds</span>
+                            <span id="meta-source">HTML metadata · 3.25 seconds</span>
                         </div>
 
                         <div class="timeline-track">
@@ -414,44 +414,44 @@
                             <article class="node" data-index="1">
                                 <div class="node-index">Stage 01</div>
                                 <div class="node-title">Load</div>
-                                <div class="node-copy">????????????????????</div>
+                                <div class="node-copy">初始化页面、读取时长、建立统一时间坐标。</div>
                             </article>
                             <article class="node" data-index="2">
                                 <div class="node-index">Stage 02</div>
                                 <div class="node-title">Drive</div>
-                                <div class="node-copy">?? <code>__setRenderTime</code> ??????</div>
+                                <div class="node-copy">通过 <code>__setRenderTime</code> 推进每一帧。</div>
                             </article>
                             <article class="node" data-index="3">
                                 <div class="node-index">Stage 03</div>
                                 <div class="node-title">Bind</div>
-                                <div class="node-copy">?????????????????</div>
+                                <div class="node-copy">让主题尺寸和输出画布保持稳定映射。</div>
                             </article>
                             <article class="node" data-index="4">
                                 <div class="node-index">Stage 04</div>
                                 <div class="node-title">Export</div>
-                                <div class="node-copy">??????? metadata ????? MOV?</div>
+                                <div class="node-copy">把整条时间线按 metadata 声明导出成 MOV。</div>
                             </article>
                         </div>
 
                         <div class="clock-panel">
                             <div class="clock" id="clock-label">00:00.000</div>
                             <div class="caption" id="caption-label">
-                                ???????????
+                                等待渲染器推进时间轴。
                             </div>
                         </div>
                     </section>
 
                     <section class="progress-card">
                         <div class="progress-row">
-                            <span>metadata ??</span>
+                            <span>metadata 来源</span>
                             <strong>HTML &lt;meta&gt;</strong>
                         </div>
                         <div class="progress-row">
-                            <span>????</span>
+                            <span>声明时长</span>
                             <strong>3.25 seconds</strong>
                         </div>
                         <div class="progress-row">
-                            <span>????</span>
+                            <span>当前阶段</span>
                             <strong id="footer-phase">Bootstrap</strong>
                         </div>
                     </section>
@@ -464,22 +464,22 @@
             const phaseLabels = [
                 {
                     badge: "BOOTSTRAP",
-                    caption: "?? metadata???????????",
+                    caption: "读取 metadata，确认整条导出时间线。",
                     footer: "Bootstrap"
                 },
                 {
                     badge: "TIMELINE",
-                    caption: "???????????????????????",
+                    caption: "按时间推进节点状态，验证首帧到中段的平滑过渡。",
                     footer: "Timeline"
                 },
                 {
                     badge: "BINDING",
-                    caption: "?????????????????????",
+                    caption: "测试主题尺寸绑定和等比例缩放后的预览表现。",
                     footer: "Binding"
                 },
                 {
                     badge: "EXPORT",
-                    caption: "????????????? metadata ???????",
+                    caption: "收束到终态，确认渲染器能按 metadata 时长完成导出。",
                     footer: "Export"
                 }
             ];

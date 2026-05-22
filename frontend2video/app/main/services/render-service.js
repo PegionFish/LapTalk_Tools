@@ -231,19 +231,19 @@ function mapError(error) {
     const code = error.code || "RENDER_FAILED";
 
     const codeToMessage = {
-        FFMPEG_ENCODE_FAILED: "FFmpeg ?????",
-        HTML_FILE_NOT_FOUND: "HTML ??????",
-        HTML_EXTENSION_INVALID: "????? .html / .htm ???",
-        PAGE_LOAD_TIMEOUT: "???????",
-        PAGE_PREPARE_FAILED: "???????????",
-        QUEUE_EMPTY: "???????????",
-        RENDER_FAILED: "?????"
+        FFMPEG_ENCODE_FAILED: "FFmpeg 编码失败。",
+        HTML_FILE_NOT_FOUND: "HTML 文件不存在。",
+        HTML_EXTENSION_INVALID: "仅支持导入 .html / .htm 文件。",
+        PAGE_LOAD_TIMEOUT: "页面加载超时。",
+        PAGE_PREPARE_FAILED: "页面准备脚本执行失败。",
+        QUEUE_EMPTY: "当前没有可导出的任务。",
+        RENDER_FAILED: "渲染失败。"
     };
 
     return {
         code,
         details: error.message || "",
-        message: codeToMessage[code] || error.message || "?????"
+        message: codeToMessage[code] || error.message || "渲染失败。"
     };
 }
 

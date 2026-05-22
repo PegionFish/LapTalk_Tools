@@ -18,9 +18,9 @@
                 </div>
                 <div class="topbar-actions">
                     <button id="import-button" class="button button-primary" type="button">
-                        ?? HTML
+                        导入 HTML
                     </button>
-                    <button id="clear-button" class="button" type="button">??</button>
+                    <button id="clear-button" class="button" type="button">清空</button>
                 </div>
             </header>
 
@@ -29,27 +29,27 @@
                     <div class="panel-heading">
                         <div>
                             <p class="eyebrow">Queue</p>
-                            <h2>?????</h2>
+                            <h2>任务与参数</h2>
                         </div>
                     </div>
 
                     <section class="parameter-card">
                         <div class="field-group">
-                            <label for="resolution-preset">?????</label>
+                            <label for="resolution-preset">分辨率预设</label>
                             <select id="resolution-preset"></select>
                         </div>
 
                         <div class="inline-fields">
                             <div class="field-group">
-                                <label for="width-input">??</label>
+                                <label for="width-input">宽度</label>
                                 <input id="width-input" type="number" min="1" step="1">
                             </div>
                             <div class="field-group">
-                                <label for="height-input">??</label>
+                                <label for="height-input">高度</label>
                                 <input id="height-input" type="number" min="1" step="1">
                             </div>
                             <div class="field-group">
-                                <label for="fps-select">??</label>
+                                <label for="fps-select">帧率</label>
                                 <select id="fps-select"></select>
                             </div>
                         </div>
@@ -57,8 +57,8 @@
 
                     <section class="queue-section">
                         <div class="queue-header">
-                            <span>????</span>
-                            <span id="queue-count" class="queue-count">0 ?</span>
+                            <span>任务队列</span>
+                            <span id="queue-count" class="queue-count">0 项</span>
                         </div>
                         <div id="queue-list" class="queue-list"></div>
                     </section>
@@ -68,7 +68,7 @@
                     <div class="panel-heading">
                         <div>
                             <p class="eyebrow">Preview</p>
-                            <h2>????</h2>
+                            <h2>当前预览</h2>
                         </div>
                     </div>
 
@@ -76,29 +76,29 @@
                         <div class="preview-stage" id="preview-stage">
                             <img id="preview-image" alt="render preview">
                             <div id="preview-empty" class="preview-empty">
-                                ?? HTML ????????????????????????
+                                拖入 HTML 页面后，这里会显示首帧预览和渲染过程中的真实帧。
                             </div>
                         </div>
                     </div>
 
                     <div class="preview-meta">
                         <div>
-                            <span class="meta-label">????</span>
-                            <strong id="current-task-name">?????</strong>
+                            <span class="meta-label">当前任务</span>
+                            <strong id="current-task-name">未选择任务</strong>
                         </div>
                         <div>
-                            <span class="meta-label">??</span>
+                            <span class="meta-label">状态</span>
                             <strong id="current-task-status">idle</strong>
                         </div>
                     </div>
 
                     <div class="preview-meta preview-meta-secondary">
                         <div>
-                            <span class="meta-label">????</span>
+                            <span class="meta-label">输出画布</span>
                             <strong id="preview-canvas-size">-</strong>
                         </div>
                         <div>
-                            <span class="meta-label">????</span>
+                            <span class="meta-label">主题尺寸</span>
                             <strong id="preview-theme-size">-</strong>
                         </div>
                     </div>
@@ -107,25 +107,25 @@
 
             <section class="progress-panel panel">
                 <div class="progress-topline">
-                    <span id="progress-title">???????</span>
-                    <span id="progress-counts">0 / 0 ?</span>
+                    <span id="progress-title">进度：等待导出</span>
+                    <span id="progress-counts">0 / 0 帧</span>
                 </div>
                 <div class="progress-track">
                     <div id="progress-bar" class="progress-bar"></div>
                 </div>
                 <div class="progress-bottomline">
                     <span id="progress-percent">0%</span>
-                    <span id="status-message">????</span>
+                    <span id="status-message">准备就绪</span>
                 </div>
             </section>
 
             <section class="output-panel panel">
                 <div class="output-path-group">
-                    <span class="meta-label">?????</span>
-                    <strong id="output-directory">?????</strong>
+                    <span class="meta-label">导出文件夹</span>
+                    <strong id="output-directory">未选择任务</strong>
                 </div>
                 <button id="browse-output-button" class="button" type="button">
-                    ??
+                    浏览
                 </button>
             </section>
 
@@ -133,17 +133,17 @@
                 <div class="version-strip">
                     <span id="app-version">v0.0.0</span>
                     <span class="divider"></span>
-                    <span id="ffmpeg-version">FFmpeg ????</span>
+                    <span id="ffmpeg-version">FFmpeg 未检测到</span>
                 </div>
                 <div class="footer-actions">
                     <button id="export-button" class="button button-primary" type="button">
-                        ??
+                        导出
                     </button>
-                    <button id="stop-button" class="button" type="button">??</button>
+                    <button id="stop-button" class="button" type="button">停止</button>
                     <button id="open-output-button" class="button" type="button">
-                        ???????
+                        打开导出文件夹
                     </button>
-                    <button id="settings-button" class="button" type="button">??</button>
+                    <button id="settings-button" class="button" type="button">设置</button>
                 </div>
             </footer>
         </div>
@@ -153,27 +153,27 @@
                 <div class="settings-header">
                     <div>
                         <p class="eyebrow">Settings</p>
-                        <h2>????</h2>
+                        <h2>渲染设置</h2>
                     </div>
                     <button id="settings-close-button" class="button" value="cancel">
-                        ??
+                        关闭
                     </button>
                 </div>
 
                 <div class="settings-body">
                     <div class="field-group">
-                        <label>FFmpeg ??</label>
-                        <code id="settings-ffmpeg-path" class="code-block">???</code>
+                        <label>FFmpeg 路径</label>
+                        <code id="settings-ffmpeg-path" class="code-block">未设置</code>
                     </div>
                     <div class="field-group">
-                        <label>FFmpeg ??</label>
-                        <code id="settings-ffmpeg-version" class="code-block">????</code>
+                        <label>FFmpeg 版本</label>
+                        <code id="settings-ffmpeg-version" class="code-block">未检测到</code>
                     </div>
                 </div>
 
                 <div class="settings-actions">
                     <button id="choose-ffmpeg-button" class="button button-primary" type="button">
-                        ?? FFmpeg
+                        选择 FFmpeg
                     </button>
                 </div>
             </form>

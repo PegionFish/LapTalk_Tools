@@ -20,16 +20,16 @@
         function render(state) {
             const activeTask = getActiveTask(state);
             if (!activeTask) {
-                currentTaskName.textContent = "?????";
+                currentTaskName.textContent = "未选择任务";
                 currentTaskStatus.textContent = "idle";
-                outputDirectory.textContent = "?????";
+                outputDirectory.textContent = "未选择任务";
                 previewCanvasSize.textContent = "-";
                 previewThemeSize.textContent = "-";
-                progressTitle.textContent = "???????";
-                progressCounts.textContent = "0 / 0 ?";
+                progressTitle.textContent = "进度：等待导出";
+                progressCounts.textContent = "0 / 0 帧";
                 progressPercent.textContent = "0%";
                 progressBar.style.width = "0%";
-                statusMessage.textContent = state.statusMessage || "????";
+                statusMessage.textContent = state.statusMessage || "准备就绪";
                 fitPreviewStage(previewFrame, previewStage, 16 / 9);
                 previewImage.style.display = "none";
                 previewEmpty.style.display = "block";
@@ -39,8 +39,8 @@
             currentTaskName.textContent = getFileName(activeTask.pagePath);
             currentTaskStatus.textContent = activeTask.status;
             outputDirectory.textContent = activeTask.outputDirectory;
-            progressTitle.textContent = `???${getFileName(activeTask.pagePath)}`;
-            progressCounts.textContent = `${activeTask.progress.currentFrame} / ${activeTask.progress.totalFrames} ?`;
+            progressTitle.textContent = `进度：${getFileName(activeTask.pagePath)}`;
+            progressCounts.textContent = `${activeTask.progress.currentFrame} / ${activeTask.progress.totalFrames} 帧`;
             progressPercent.textContent = `${activeTask.progress.percent}%`;
             progressBar.style.width = `${Math.max(0, Math.min(100, activeTask.progress.percent))}%`;
             statusMessage.textContent = state.statusMessage || getStatusMessage(activeTask);
@@ -53,12 +53,12 @@
                 ? preview.canvasHeight
                 : activeTask.height;
 
-            previewCanvasSize.textContent = `${canvasWidth} ? ${canvasHeight}`;
+            previewCanvasSize.textContent = `${canvasWidth} × ${canvasHeight}`;
 
             if (preview && preview.themeWidth && preview.themeHeight) {
-                previewThemeSize.textContent = `${preview.themeWidth} ? ${preview.themeHeight} ? ${formatScale(preview.renderScale)}`;
+                previewThemeSize.textContent = `${preview.themeWidth} × ${preview.themeHeight} · ${formatScale(preview.renderScale)}`;
             } else {
-                previewThemeSize.textContent = `${activeTask.width} ? ${activeTask.height}`;
+                previewThemeSize.textContent = `${activeTask.width} × ${activeTask.height}`;
             }
 
             fitPreviewStage(
@@ -125,15 +125,15 @@
         }
 
         const statusToMessage = {
-            done: "?????",
-            error: "?????",
-            idle: "?????",
-            ready: "?????",
-            rendering: `?? ${task.progress.stage === "encoding" ? "??" : "??"}?`,
-            stopped: "??????"
+            done: "导出完成。",
+            error: "导出失败。",
+            idle: "等待开始。",
+            ready: "准备就绪。",
+            rendering: `正在 ${task.progress.stage === "encoding" ? "编码" : "抓帧"}。`,
+            stopped: "渲染已停止。"
         };
 
-        return statusToMessage[task.status] || "?????";
+        return statusToMessage[task.status] || "准备就绪。";
     }
 
     function formatScale(value) {
