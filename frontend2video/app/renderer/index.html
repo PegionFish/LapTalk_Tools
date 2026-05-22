@@ -72,10 +72,12 @@
                         </div>
                     </div>
 
-                    <div class="preview-frame">
-                        <img id="preview-image" alt="render preview">
-                        <div id="preview-empty" class="preview-empty">
-                            ?? HTML ????????????????????????
+                    <div class="preview-frame" id="preview-frame">
+                        <div class="preview-stage" id="preview-stage">
+                            <img id="preview-image" alt="render preview">
+                            <div id="preview-empty" class="preview-empty">
+                                ?? HTML ????????????????????????
+                            </div>
                         </div>
                     </div>
 
@@ -87,6 +89,17 @@
                         <div>
                             <span class="meta-label">??</span>
                             <strong id="current-task-status">idle</strong>
+                        </div>
+                    </div>
+
+                    <div class="preview-meta preview-meta-secondary">
+                        <div>
+                            <span class="meta-label">????</span>
+                            <strong id="preview-canvas-size">-</strong>
+                        </div>
+                        <div>
+                            <span class="meta-label">????</span>
+                            <strong id="preview-theme-size">-</strong>
                         </div>
                     </div>
                 </section>

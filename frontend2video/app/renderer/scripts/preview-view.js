@@ -4,8 +4,12 @@
             currentTaskName,
             currentTaskStatus,
             outputDirectory,
+            previewCanvasSize,
             previewEmpty,
+            previewFrame,
             previewImage,
+            previewStage,
+            previewThemeSize,
             progressBar,
             progressCounts,
             progressPercent,
@@ -19,11 +23,14 @@
                 currentTaskName.textContent = "?????";
                 currentTaskStatus.textContent = "idle";
                 outputDirectory.textContent = "?????";
+                previewCanvasSize.textContent = "-";
+                previewThemeSize.textContent = "-";
                 progressTitle.textContent = "???????";
                 progressCounts.textContent = "0 / 0 ?";
                 progressPercent.textContent = "0%";
                 progressBar.style.width = "0%";
                 statusMessage.textContent = state.statusMessage || "????";
+                fitPreviewStage(previewFrame, previewStage, 16 / 9);
                 previewImage.style.display = "none";
                 previewEmpty.style.display = "block";
                 return;
@@ -39,6 +46,27 @@
             statusMessage.textContent = state.statusMessage || getStatusMessage(activeTask);
 
             const preview = state.previews[activeTask.id];
+            const canvasWidth = preview && preview.canvasWidth
+                ? preview.canvasWidth
+                : activeTask.width;
+            const canvasHeight = preview && preview.canvasHeight
+                ? preview.canvasHeight
+                : activeTask.height;
+
+            previewCanvasSize.textContent = `${canvasWidth} ? ${canvasHeight}`;
+
+            if (preview && preview.themeWidth && preview.themeHeight) {
+                previewThemeSize.textContent = `${preview.themeWidth} ? ${preview.themeHeight} ? ${formatScale(preview.renderScale)}`;
+            } else {
+                previewThemeSize.textContent = `${activeTask.width} ? ${activeTask.height}`;
+            }
+
+            fitPreviewStage(
+                previewFrame,
+                previewStage,
+                canvasWidth / Math.max(canvasHeight, 1)
+            );
+
             if (preview && preview.previewDataUrl) {
                 previewImage.src = preview.previewDataUrl;
                 previewImage.style.display = "block";
@@ -62,6 +90,31 @@
         );
     }
 
+    function fitPreviewStage(previewFrame, previewStage, aspectRatio) {
+        const frameBounds = previewFrame.getBoundingClientRect();
+        const safeAspectRatio = Number.isFinite(aspectRatio) && aspectRatio > 0
+            ? aspectRatio
+            : 16 / 9;
+
+        const availableWidth = Math.max(0, frameBounds.width - 8);
+        const availableHeight = Math.max(0, frameBounds.height - 8);
+
+        if (!availableWidth || !availableHeight) {
+            return;
+        }
+
+        let stageWidth = availableWidth;
+        let stageHeight = stageWidth / safeAspectRatio;
+
+        if (stageHeight > availableHeight) {
+            stageHeight = availableHeight;
+            stageWidth = stageHeight * safeAspectRatio;
+        }
+
+        previewStage.style.width = `${Math.max(220, Math.floor(stageWidth))}px`;
+        previewStage.style.height = `${Math.max(160, Math.floor(stageHeight))}px`;
+    }
+
     function getFileName(filePath) {
         return filePath.split(/[\\/]/).pop() || filePath;
     }
@@ -81,6 +134,15 @@
         };
 
         return statusToMessage[task.status] || "?????";
+    }
+
+    function formatScale(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number) || number <= 0) {
+            return "scale 1.00x";
+        }
+
+        return `scale ${number.toFixed(2)}x`;
     }
 
     window.RenderStudioPreviewView = {

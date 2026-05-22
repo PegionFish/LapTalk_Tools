@@ -36,8 +36,12 @@
         importButton: document.getElementById("import-button"),
         openOutputButton: document.getElementById("open-output-button"),
         outputDirectory: document.getElementById("output-directory"),
+        previewCanvasSize: document.getElementById("preview-canvas-size"),
         previewEmpty: document.getElementById("preview-empty"),
+        previewFrame: document.getElementById("preview-frame"),
         previewImage: document.getElementById("preview-image"),
+        previewStage: document.getElementById("preview-stage"),
+        previewThemeSize: document.getElementById("preview-theme-size"),
         progressBar: document.getElementById("progress-bar"),
         progressCounts: document.getElementById("progress-counts"),
         progressPercent: document.getElementById("progress-percent"),
@@ -68,8 +72,12 @@
         currentTaskName: elements.currentTaskName,
         currentTaskStatus: elements.currentTaskStatus,
         outputDirectory: elements.outputDirectory,
+        previewCanvasSize: elements.previewCanvasSize,
         previewEmpty: elements.previewEmpty,
+        previewFrame: elements.previewFrame,
         previewImage: elements.previewImage,
+        previewStage: elements.previewStage,
+        previewThemeSize: elements.previewThemeSize,
         progressBar: elements.progressBar,
         progressCounts: elements.progressCounts,
         progressPercent: elements.progressPercent,
@@ -105,6 +113,10 @@
     populatePresetOptions();
     bindEvents();
     bindIpcEvents();
+
+    window.addEventListener("resize", () => {
+        previewView.render(store.getState());
+    });
 
     store.subscribe((state) => {
         queueView.render(state);

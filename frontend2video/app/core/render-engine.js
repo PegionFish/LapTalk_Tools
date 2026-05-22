@@ -44,10 +44,14 @@ async function capturePreviewFrame(options) {
         }
 
         await loadTaskPage(hiddenWindow, task);
+        const viewportBinding = await applyPageThemeBinding(hiddenWindow, task);
         await preparePage(hiddenWindow, 0, DEFAULT_SETTLE_MS);
         const image = await captureWindowImage(hiddenWindow, task.width, task.height);
 
         return {
+            ...viewportBinding,
+            canvasHeight: task.height,
+            canvasWidth: task.width,
             frameIndex: 0,
             previewDataUrl: image.toDataURL(),
             totalFrames: task.progress.totalFrames
@@ -88,12 +92,14 @@ async function renderTaskToMov(options) {
         }
 
         await loadTaskPage(hiddenWindow, task);
+        const viewportBinding = await applyPageThemeBinding(hiddenWindow, task);
         await captureFrames({
             hiddenWindow,
             onPreview,
             onProgress,
             signal,
             task,
+            viewportBinding,
             workspace
         });
 
@@ -127,6 +133,7 @@ async function captureFrames(options) {
         onProgress,
         signal,
         task,
+        viewportBinding,
         workspace
     } = options;
 
@@ -147,6 +154,9 @@ async function captureFrames(options) {
             frameIndex % DEFAULT_PREVIEW_FRAME_INTERVAL === 0
         ) {
             onPreview({
+                ...viewportBinding,
+                canvasHeight: task.height,
+                canvasWidth: task.width,
                 frameIndex,
                 previewDataUrl: image.toDataURL(),
                 totalFrames: task.progress.totalFrames
@@ -179,6 +189,44 @@ async function loadTaskPage(hiddenWindow, task) {
     );
 }
 
+async function applyPageThemeBinding(hiddenWindow, task) {
+    hiddenWindow.webContents.setZoomFactor(1);
+
+    const pageMetrics = await inspectPageThemeMetrics(hiddenWindow);
+    const viewportBinding = resolveViewportBinding({
+        targetHeight: task.height,
+        targetWidth: task.width,
+        themeHeight: pageMetrics.themeHeight,
+        themeWidth: pageMetrics.themeWidth
+    });
+
+    hiddenWindow.webContents.setZoomFactor(viewportBinding.renderScale);
+
+    await hiddenWindow.webContents.executeJavaScript(
+        `
+            (() => {
+                document.documentElement.style.overflow = "hidden";
+                document.documentElement.style.setProperty("--render-scale", "${viewportBinding.renderScale}");
+                document.documentElement.setAttribute("data-render-scale", "${viewportBinding.renderScale}");
+
+                if (document.body) {
+                    document.body.style.overflow = "hidden";
+                }
+
+                window.scrollTo(0, 0);
+            })();
+        `,
+        true
+    );
+
+    await hiddenWindow.webContents.executeJavaScript(
+        "new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))",
+        true
+    );
+
+    return viewportBinding;
+}
+
 async function preparePage(hiddenWindow, renderTimeMs, settleMs) {
     try {
         await hiddenWindow.webContents.executeJavaScript(
@@ -198,6 +246,78 @@ async function captureWindowImage(hiddenWindow, width, height) {
         x: 0,
         y: 0
     });
+}
+
+async function inspectPageThemeMetrics(hiddenWindow) {
+    const metrics = await hiddenWindow.webContents.executeJavaScript(
+        `
+            (() => {
+                const documentElement = document.documentElement;
+                const body = document.body;
+                const firstElement = body && body.firstElementChild
+                    ? body.firstElementChild
+                    : null;
+
+                const bodyRect = body ? body.getBoundingClientRect() : null;
+                const firstElementRect = firstElement
+                    ? firstElement.getBoundingClientRect()
+                    : null;
+
+                const widthCandidates = [
+                    window.innerWidth,
+                    documentElement ? documentElement.clientWidth : 0,
+                    documentElement ? documentElement.scrollWidth : 0,
+                    documentElement ? documentElement.offsetWidth : 0,
+                    body ? body.clientWidth : 0,
+                    body ? body.scrollWidth : 0,
+                    body ? body.offsetWidth : 0,
+                    bodyRect ? bodyRect.width : 0,
+                    firstElementRect ? firstElementRect.width : 0
+                ];
+
+                const heightCandidates = [
+                    window.innerHeight,
+                    documentElement ? documentElement.clientHeight : 0,
+                    documentElement ? documentElement.scrollHeight : 0,
+                    documentElement ? documentElement.offsetHeight : 0,
+                    body ? body.clientHeight : 0,
+                    body ? body.scrollHeight : 0,
+                    body ? body.offsetHeight : 0,
+                    bodyRect ? bodyRect.height : 0,
+                    firstElementRect ? firstElementRect.height : 0
+                ];
+
+                return {
+                    themeHeight: Math.max(...heightCandidates.map((value) => Math.ceil(Number(value) || 0))),
+                    themeWidth: Math.max(...widthCandidates.map((value) => Math.ceil(Number(value) || 0)))
+                };
+            })();
+        `,
+        true
+    );
+
+    return {
+        themeHeight: toPositiveNumber(metrics.themeHeight),
+        themeWidth: toPositiveNumber(metrics.themeWidth)
+    };
+}
+
+function resolveViewportBinding(options) {
+    const safeTargetWidth = toPositiveNumber(options.targetWidth) || 1;
+    const safeTargetHeight = toPositiveNumber(options.targetHeight) || 1;
+    const safeThemeWidth = toPositiveNumber(options.themeWidth) || safeTargetWidth;
+    const safeThemeHeight = toPositiveNumber(options.themeHeight) || safeTargetHeight;
+
+    const renderScale = Math.min(
+        safeTargetWidth / safeThemeWidth,
+        safeTargetHeight / safeThemeHeight
+    );
+
+    return {
+        renderScale: normalizeScale(renderScale),
+        themeHeight: safeThemeHeight,
+        themeWidth: safeThemeWidth
+    };
 }
 
 async function writePngFrame(framesDirectory, image, frameIndex) {
@@ -250,8 +370,26 @@ function sleep(delayMs) {
     });
 }
 
+function toPositiveNumber(value) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) {
+        return number;
+    }
+
+    return 0;
+}
+
+function normalizeScale(value) {
+    if (!Number.isFinite(value) || value <= 0) {
+        return 1;
+    }
+
+    return Number(value.toFixed(4));
+}
+
 module.exports = {
     RenderStoppedError,
     capturePreviewFrame,
-    renderTaskToMov
+    renderTaskToMov,
+    resolveViewportBinding
 };
