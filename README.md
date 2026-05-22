@@ -1,7 +1,8 @@
 # LapTalk_Tools
 
-In-house tools for video production, telemetry visualization, and rendering workflows.
+In-house tools for video production, telemetry visualization, and rendering workflows.  
 
+Follow us at [bilibili](https://space.bilibili.com/3691008172754973)
 ## Repository Layout
 
 - `csv_visual/` - Windows GUI tool for loading HWiNFO CSV files and exporting timestamp-based line charts as transparent PNG images.
